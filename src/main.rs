@@ -7,7 +7,7 @@ use boomphf::*;
 use itertools::Itertools;
 
 extern crate clap;
-use clap::{Arg, App}; //, SubCommand};
+use clap::{App, Arg}; //, SubCommand};
 
 fn for_each_line_in_file(paf_filename: &str, mut callback: impl FnMut(&str)) {
     let file = File::open(paf_filename).unwrap();
@@ -32,7 +32,10 @@ struct AlignedSeq {
 impl AlignedSeq {
     fn new() -> Self {
         AlignedSeq {
-            name: String::new(), length: 0, rank: 0, offset: 0
+            name: String::new(),
+            length: 0,
+            rank: 0,
+            offset: 0,
         }
     }
 }
@@ -100,8 +103,8 @@ impl PafFile {
         let target_mphf = Mphf::new(1.7, &target_names);
         let mut seen_queries = vec![false; query_names.len()];
         let mut seen_targets = vec![false; target_names.len()];
-        let mut queries: Vec<AlignedSeq> = vec![AlignedSeq::new() ; query_names.len()];
-        let mut targets: Vec<AlignedSeq> = vec![AlignedSeq::new() ; target_names.len()];
+        let mut queries: Vec<AlignedSeq> = vec![AlignedSeq::new(); query_names.len()];
+        let mut targets: Vec<AlignedSeq> = vec![AlignedSeq::new(); target_names.len()];
         let mut query_idx: usize = 0;
         let mut target_idx: usize = 0;
         let mut query_offset: usize = 0;
@@ -139,7 +142,7 @@ impl PafFile {
             queries,
             targets,
             query_mphf,
-            target_mphf
+            target_mphf,
         }
     }
     fn global_query_start(self: &PafFile, idx: usize) -> usize {
@@ -151,18 +154,70 @@ impl PafFile {
     fn global_start(self: &PafFile, line: &str) -> (usize, usize) {
         let query_id = self.query_mphf.hash(&paf_query(line)) as usize;
         let target_id = self.target_mphf.hash(&paf_target(line)) as usize;
-        (self.global_query_start(query_id), self.global_target_start(target_id))
+        (
+            self.global_query_start(query_id),
+            self.global_target_start(target_id),
+        )
+    }
+    fn for_each_aligned_pos<F>(self: &PafFile, line: &str, mut func: F)
+    where
+        F: FnMut(char, usize, usize),
+    {
+        let (x, y) = self.global_start(line);
+        let mut query_pos = x;
+        let mut target_pos = y;
+        // find and walk the cigar string
+        for cigar in line
+            .split('\t')
+            .skip_while(|s| !s.starts_with("cg:Z:"))
+            .map(|s| s.strip_prefix("cg:Z:").unwrap())
+            .collect::<Vec<&str>>()
+        {
+            //println!("{}", cigar);
+            let mut first: usize = 0;
+            for (i, b) in cigar.bytes().enumerate() {
+                let c = b as char;
+                //println!("{} {}", i, b as char);
+                match c {
+                    'M' | '=' | 'X' => {
+                        let n = cigar[first..i].parse::<usize>().unwrap() as usize;
+                        for _i in 0..n {
+                            func(c, query_pos, target_pos);
+                            query_pos += 1;
+                            target_pos += 1;
+                        }
+                        first = i+1;
+                    }
+                    'D' => {
+                        let n = cigar[first..i].parse::<usize>().unwrap();
+                        target_pos += n;
+                        first = i+1;
+                    }
+                    'I' => {
+                        let n = cigar[first..i].parse::<usize>().unwrap();
+                        query_pos += n;
+                        first = i+1;
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
     fn process(self: &PafFile) {
         for_each_line_in_file(&self.filename, |line: &str| {
             let (x, y) = self.global_start(line);
-            println!("{} {} {} {} {} {}",
-                     paf_query(line),
-                     paf_query_begin(line),
-                     paf_target(line),
-                     paf_target_begin(line),
-                     x, y);
-        })
+            println!(
+                "{} {} {} {} {} {}",
+                paf_query(line),
+                paf_query_begin(line),
+                paf_target(line),
+                paf_target_begin(line),
+                x,
+                y
+            );
+            self.for_each_aligned_pos(line, |c, x, y| ());
+            println!();
+        });
     }
 }
 
@@ -171,15 +226,19 @@ fn main() {
         .version("0.1.0")
         .author("Erik Garrison <erik.garrison@gmail.com>")
         .about("Generate a dotplot from pairwise DNA alignments in PAF format")
-        .arg(Arg::with_name("INPUT")
-             .required(true)
-             .takes_value(true)
-             .index(1)
-             .help("input PAF file"))
-        .arg(Arg::with_name("png")
-             .short("p")
-             .long("png")
-             .help("Save the dotplot to this file."))
+        .arg(
+            Arg::with_name("INPUT")
+                .required(true)
+                .takes_value(true)
+                .index(1)
+                .help("input PAF file"),
+        )
+        .arg(
+            Arg::with_name("png")
+                .short("p")
+                .long("png")
+                .help("Save the dotplot to this file."),
+        )
         .get_matches();
     let filename = matches.value_of("INPUT").unwrap();
     let paf = PafFile::new(filename);
