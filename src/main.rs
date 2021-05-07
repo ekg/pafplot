@@ -1,8 +1,11 @@
 use std::fs::File;
-//use std::collections::HashMap;
 use std::io::{self, prelude::*, BufReader};
+use std::path::Path;
 
 use boomphf::*;
+
+use rgb::*;
+//use lodepng::*;
 
 use itertools::Itertools;
 
@@ -159,9 +162,9 @@ impl PafFile {
             self.global_target_start(target_id),
         )
     }
-    fn for_each_aligned_pos<F>(self: &PafFile, line: &str, mut func: F)
+    fn for_each_match<F>(self: &PafFile, line: &str, mut func: F)
     where
-        F: FnMut(char, usize, usize),
+        F: FnMut(char, usize, usize, usize),
     {
         let (x, y) = self.global_start(line);
         let mut query_pos = x;
@@ -181,11 +184,7 @@ impl PafFile {
                 match c {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap() as usize;
-                        for _i in 0..n {
-                            func(c, query_pos, target_pos);
-                            query_pos += 1;
-                            target_pos += 1;
-                        }
+                        func(c, query_pos, target_pos, n);
                         first = i+1;
                     }
                     'D' => {
@@ -215,7 +214,7 @@ impl PafFile {
                 x,
                 y
             );
-            self.for_each_aligned_pos(line, |c, x, y| ());
+            self.for_each_match(line, |c, x, y, d| print!(" | {} {} {} {}", c, x, y, d));
             println!();
         });
     }
@@ -242,5 +241,30 @@ fn main() {
         .get_matches();
     let filename = matches.value_of("INPUT").unwrap();
     let paf = PafFile::new(filename);
-    paf.process()
+    paf.process();
+
+    //let image = [255u8, 0, 0,   0, 255, 0,
+    //             0, 0, 255,   0, 99, 99];
+    let px = RGB8 {
+        r:255_u8,
+        g:0,
+        b:255,
+    };
+    let inverted = px.map(|ch| 255 - ch);
+    let width = 1000;
+    let height = 1000;
+    let mut raw = vec![0u8; width*height*3];
+    let pixels = raw.as_rgb_mut();
+    for i in pixels.iter_mut() {
+        *i = px;
+    }
+    let path = &Path::new("write_test.png");
+    // encode_file takes the path to the image, a u8 array,
+    // the width, the height, the color mode, and the bit depth
+    if let Err(e) = lodepng::encode_file(path, &raw, width, height, lodepng::ColorType::RGB, 8) {
+        panic!("failed to write png: {:?}", e);
+    }
+
+    println!("Written to {}", path.display());
+
 }
