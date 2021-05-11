@@ -199,25 +199,24 @@ impl PafFile {
                         func(c, query_pos, target_pos, n);
                         query_pos += n;
                         target_pos += n;
-                        first = i+1;
+                        first = i + 1;
                     }
                     'D' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
                         target_pos += n;
-                        first = i+1;
+                        first = i + 1;
                     }
                     'I' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
                         query_pos += n;
-                        first = i+1;
+                        first = i + 1;
                     }
                     _ => {}
                 }
             }
         }
     }
-    fn for_each_match_in_file<F>(self: &PafFile,
-                                 mut func: F)
+    fn for_each_match_in_file<F>(self: &PafFile, mut func: F)
     where
         F: FnMut(char, usize, usize, usize),
     {
@@ -242,26 +241,26 @@ impl PafFile {
         //let max_length = cmp::max(self.query_length, self.target_length) as f64;
         //println!("query = {} target = {}", self.query_length, self.target_length);
         if self.query_length > self.target_length {
-            let ratio = self.target_length/self.query_length;
-            (major_axis,
-             (major_axis as f64 * ratio) as usize)
+            let ratio = self.target_length / self.query_length;
+            (major_axis, (major_axis as f64 * ratio) as usize)
         } else {
-            let ratio = self.query_length/self.target_length;
-            ((major_axis as f64 * ratio) as usize,
-             major_axis)
+            let ratio = self.query_length / self.target_length;
+            ((major_axis as f64 * ratio) as usize, major_axis)
         }
     }
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
-        (axes.0 as f64 * (x as f64 / self.query_length as f64),
-         axes.1 as f64 * (y as f64 / self.target_length as f64))
+        (
+            axes.0 as f64 * (x as f64 / self.query_length as f64),
+            axes.1 as f64 * (y as f64 / self.target_length as f64),
+        )
     }
     /*
-    fn get_pixel(self: &PafFile, x: i64, y: i64, axes: (usize, usize)) -> usize {
-        let (q, t) = axes;
-        x * (self.query_length / q as f64).round() as usize * q + y * (self.target_length / t as f64).round() as usize
-    }
-*/
+        fn get_pixel(self: &PafFile, x: i64, y: i64, axes: (usize, usize)) -> usize {
+            let (q, t) = axes;
+            x * (self.query_length / q as f64).round() as usize * q + y * (self.target_length / t as f64).round() as usize
+        }
+    */
 }
 
 fn main() {
@@ -288,7 +287,7 @@ fn main() {
                 .takes_value(false)
                 .short("d")
                 .long("dark")
-                .help("Render using dark theme (white on black).")
+                .help("Render using dark theme (white on black)."),
         )
         .arg(
             Arg::with_name("size")
@@ -310,23 +309,20 @@ fn main() {
 
     let default_output = format!("{}.png", filename);
 
-    let output_png = matches
-        .value_of("png")
-        .unwrap_or(&default_output);
+    let output_png = matches.value_of("png").unwrap_or(&default_output);
 
     let dark = matches.is_present("dark");
 
-    //let image = [255u8, 0, 0,   0, 255, 0,
-    //             0, 0, 255,   0, 99, 99];
+    // colors we use
     let white = RGB8 {
-        r:255_u8,
-        g:255,
-        b:255,
+        r: 255_u8,
+        g: 255,
+        b: 255,
     };
     let black = white.map(|ch| 255 - ch);
 
     let axes = paf.get_axes(major_axis);
-    let mut raw = vec![0u8; axes.0*axes.1*3];
+    let mut raw = vec![0u8; axes.0 * axes.1 * 3];
     let pixels = raw.as_rgb_mut();
 
     if dark {
@@ -338,24 +334,27 @@ fn main() {
             *i = white;
         }
     }
-    let get_color = |val: f64| {
-        RGB8 {
-            r:((255.0 * (1.0-val)).round() as u8),
-            g:((255.0 * (1.0-val)).round() as u8),
-            b:((255.0 * (1.0-val)).round() as u8),
+    let get_color = if dark {
+        |val: f64| RGB8 {
+            r: ((255.0 * val).round() as u8),
+            g: ((255.0 * val).round() as u8),
+            b: ((255.0 * val).round() as u8),
+        }
+    } else {
+        |val: f64| RGB8 {
+            r: ((255.0 * (1.0 - val)).round() as u8),
+            g: ((255.0 * (1.0 - val)).round() as u8),
+            b: ((255.0 * (1.0 - val)).round() as u8),
         }
     };
-    //println!("got axes {} {}", axes.0, axes.1);
-    //let (query_axis, target_axis) = axes;
-    //paf.process();
+
+    // for each match, we draw a line on our raster using Xiaolin Wu's antialiased line algorithm
     let draw_match = |_c, x: usize, y: usize, len: usize| {
         //println!("(({}, {}), {}), ", x, y, len);
         let start = paf.project_xy(x, y, axes);
-        let end = paf.project_xy(x+len, y+len, axes);
+        let end = paf.project_xy(x + len, y + len, axes);
         //println!("start and end ({} {}) ({} {})", start.0, start.1, end.0, end.1);
         for ((x, y), val) in XiaolinWu::<f64, i64>::new(start, end) {
-            //255 * value
-            //let i = (paf.into_axes(x, axes) as usize) * width + (y as usize);
             let i: usize = (x as usize) + (y as usize * axes.0);
             pixels[i] = get_color(val);
         }
@@ -363,12 +362,10 @@ fn main() {
     paf.for_each_match_in_file(draw_match);
 
     let path = &Path::new(output_png);
+
     // encode_file takes the path to the image, a u8 array,
     // the width, the height, the color mode, and the bit depth
     if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8) {
         panic!("failed to write png: {:?}", e);
     }
-
-    //println!("Written to {}", path.display());
-
 }
