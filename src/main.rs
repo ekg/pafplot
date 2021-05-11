@@ -1,7 +1,7 @@
 use std::fs::File;
-use std::io::{self, prelude::*, BufReader};
+use std::io::{prelude::*, BufReader};
 use std::path::Path;
-use std::cmp;
+//use std::cmp;
 
 use boomphf::*;
 
@@ -74,9 +74,11 @@ fn paf_query_begin(line: &str) -> usize {
     line.split('\t').nth(2).unwrap().parse::<usize>().unwrap()
 }
 
+/*
 fn paf_query_end(line: &str) -> usize {
     line.split('\t').nth(3).unwrap().parse::<usize>().unwrap()
 }
+*/
 
 fn paf_query_is_rev(line: &str) -> bool {
     line.split('\t').nth(4).unwrap() == "-"
@@ -94,9 +96,11 @@ fn paf_target_begin(line: &str) -> usize {
     line.split('\t').nth(7).unwrap().parse::<usize>().unwrap()
 }
 
+/*
 fn paf_target_end(line: &str) -> usize {
     line.split('\t').nth(8).unwrap().parse::<usize>().unwrap()
 }
+*/
 
 impl PafFile {
     fn new(filename: &str) -> Self {
@@ -184,11 +188,11 @@ impl PafFile {
             .map(|s| s.strip_prefix("cg:Z:").unwrap())
             .collect::<Vec<&str>>()
         {
-            println!("{}", cigar);
+            //println!("{}", cigar);
             let mut first: usize = 0;
             for (i, b) in cigar.bytes().enumerate() {
                 let c = b as char;
-                println!("{} {}", i, b as char);
+                //println!("{} {}", i, b as char);
                 match c {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap() as usize;
@@ -218,8 +222,8 @@ impl PafFile {
         F: FnMut(char, usize, usize, usize),
     {
         for_each_line_in_file(&self.filename, |line: &str| {
+            /*
             let (x, y) = self.global_start(line);
-
             println!(
                 "{} {} {} {} {} {}",
                 paf_query(line),
@@ -229,7 +233,7 @@ impl PafFile {
                 x,
                 y
             );
-
+             */
             self.for_each_match(line, |c, x, y, d| func(c, x, y, d));
             //println!();
         });
@@ -248,7 +252,7 @@ impl PafFile {
         }
     }
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
-        println!("axes {} {}", axes.0, axes.1);
+        //println!("axes {} {}", axes.0, axes.1);
         (axes.0 as f64 * (x as f64 / self.query_length as f64),
          axes.1 as f64 * (y as f64 / self.target_length as f64))
     }
@@ -274,13 +278,43 @@ fn main() {
         )
         .arg(
             Arg::with_name("png")
+                .takes_value(true)
                 .short("p")
                 .long("png")
                 .help("Save the dotplot to this file."),
         )
+        .arg(
+            Arg::with_name("dark")
+                .takes_value(false)
+                .short("d")
+                .long("dark")
+                .help("Render using dark theme (white on black).")
+        )
+        .arg(
+            Arg::with_name("size")
+                .takes_value(true)
+                .short("s")
+                .long("size")
+                .help("The major axis of the plot, in pixels. [default: 1000]"),
+        )
         .get_matches();
+
     let filename = matches.value_of("INPUT").unwrap();
     let paf = PafFile::new(filename);
+
+    let major_axis = matches
+        .value_of("size")
+        .unwrap_or(&"1000")
+        .parse::<usize>()
+        .unwrap();
+
+    let default_output = format!("{}.png", filename);
+
+    let output_png = matches
+        .value_of("png")
+        .unwrap_or(&default_output);
+
+    let dark = matches.is_present("dark");
 
     //let image = [255u8, 0, 0,   0, 255, 0,
     //             0, 0, 255,   0, 99, 99];
@@ -290,42 +324,51 @@ fn main() {
         b:255,
     };
     let black = white.map(|ch| 255 - ch);
-    let major_axis = 1000;
-    //let height = 1000;
+
     let axes = paf.get_axes(major_axis);
     let mut raw = vec![0u8; axes.0*axes.1*3];
     let pixels = raw.as_rgb_mut();
-    for i in pixels.iter_mut() {
-        *i = white;
+
+    if dark {
+        for i in pixels.iter_mut() {
+            *i = black;
+        }
+    } else {
+        for i in pixels.iter_mut() {
+            *i = white;
+        }
     }
-    println!("got axes {} {}", axes.0, axes.1);
+    let get_color = |val: f64| {
+        RGB8 {
+            r:((255.0 * (1.0-val)).round() as u8),
+            g:((255.0 * (1.0-val)).round() as u8),
+            b:((255.0 * (1.0-val)).round() as u8),
+        }
+    };
+    //println!("got axes {} {}", axes.0, axes.1);
     //let (query_axis, target_axis) = axes;
     //paf.process();
-    let draw_match = |c, x: usize, y: usize, len: usize| {
-        println!("(({}, {}), {}), ", x, y, len);
+    let draw_match = |_c, x: usize, y: usize, len: usize| {
+        //println!("(({}, {}), {}), ", x, y, len);
         let start = paf.project_xy(x, y, axes);
         let end = paf.project_xy(x+len, y+len, axes);
-        println!("start and end ({} {}) ({} {})", start.0, start.1, end.0, end.1);
+        //println!("start and end ({} {}) ({} {})", start.0, start.1, end.0, end.1);
         for ((x, y), val) in XiaolinWu::<f64, i64>::new(start, end) {
             //255 * value
             //let i = (paf.into_axes(x, axes) as usize) * width + (y as usize);
             let i: usize = (x as usize) + (y as usize * axes.0);
-            pixels[i] = RGB8 {
-                r:((255.0 * (1.0-val)).round() as u8),
-                g:((255.0 * (1.0-val)).round() as u8),
-                b:((255.0 * (1.0-val)).round() as u8),
-            };
+            pixels[i] = get_color(val);
         }
     };
     paf.for_each_match_in_file(draw_match);
 
-    let path = &Path::new("write_test.png");
+    let path = &Path::new(output_png);
     // encode_file takes the path to the image, a u8 array,
     // the width, the height, the color mode, and the bit depth
     if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8) {
         panic!("failed to write png: {:?}", e);
     }
 
-    println!("Written to {}", path.display());
+    //println!("Written to {}", path.display());
 
 }
