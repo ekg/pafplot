@@ -74,11 +74,9 @@ fn paf_query_begin(line: &str) -> usize {
     line.split('\t').nth(2).unwrap().parse::<usize>().unwrap()
 }
 
-/*
 fn paf_query_end(line: &str) -> usize {
     line.split('\t').nth(3).unwrap().parse::<usize>().unwrap()
 }
-*/
 
 fn paf_query_is_rev(line: &str) -> bool {
     line.split('\t').nth(4).unwrap() == "-"
@@ -163,25 +161,37 @@ impl PafFile {
     fn global_query_start(self: &PafFile, idx: usize) -> usize {
         self.queries[idx].offset
     }
+    fn query_length(self: &PafFile, idx: usize) -> usize {
+        self.queries[idx].length
+    }
     fn global_target_start(self: &PafFile, idx: usize) -> usize {
         self.targets[idx].offset
     }
-    fn global_start(self: &PafFile, line: &str) -> (usize, usize) {
+    fn global_start(self: &PafFile, line: &str, query_rev: bool) -> (usize, usize) {
         let query_id = self.query_mphf.hash(&paf_query(line)) as usize;
         let target_id = self.target_mphf.hash(&paf_target(line)) as usize;
         (
-            self.global_query_start(query_id) + paf_query_begin(line),
+            if query_rev {
+                self.global_query_start(query_id)
+                    + (self.query_length(query_id) - paf_query_end(line))
+            } else {
+                self.global_query_start(query_id)
+                    + (self.query_length(query_id) - paf_query_begin(line))
+            },
+            //self.global_query_start(query_id) + paf_query_begin(line),
             self.global_target_start(target_id) + paf_target_begin(line),
         )
     }
     fn for_each_match<F>(self: &PafFile, line: &str, mut func: F)
     where
-        F: FnMut(char, usize, usize, usize),
+        F: FnMut(char, usize, bool, usize, usize),
     {
-        let (x, y) = self.global_start(line);
+        let query_rev = paf_query_is_rev(line);
+        let (x, y) = self.global_start(line, query_rev);
         let mut query_pos = x;
         let mut target_pos = y;
         // find and walk the cigar string
+        //println!("{}", line);
         for cigar in line
             .split('\t')
             .skip_while(|s| !s.starts_with("cg:Z:"))
@@ -196,8 +206,8 @@ impl PafFile {
                 match c {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap() as usize;
-                        func(c, query_pos, target_pos, n);
-                        query_pos += n;
+                        func(c, query_pos, query_rev, target_pos, n);
+                        query_pos += if query_rev { n } else { 0-n };
                         target_pos += n;
                         first = i + 1;
                     }
@@ -208,7 +218,7 @@ impl PafFile {
                     }
                     'I' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
-                        query_pos += n;
+                        query_pos += if query_rev { n } else { 0-n };
                         first = i + 1;
                     }
                     _ => {}
@@ -218,7 +228,7 @@ impl PafFile {
     }
     fn for_each_match_in_file<F>(self: &PafFile, mut func: F)
     where
-        F: FnMut(char, usize, usize, usize),
+        F: FnMut(char, usize, bool, usize, usize),
     {
         for_each_line_in_file(&self.filename, |line: &str| {
             /*
@@ -233,7 +243,7 @@ impl PafFile {
                 y
             );
              */
-            self.for_each_match(line, |c, x, y, d| func(c, x, y, d));
+            self.for_each_match(line, |c, x, r, y, d| func(c, x, r, y, d));
             //println!();
         });
     }
@@ -241,18 +251,18 @@ impl PafFile {
         //let max_length = cmp::max(self.query_length, self.target_length) as f64;
         //println!("query = {} target = {}", self.query_length, self.target_length);
         if self.query_length > self.target_length {
-            let ratio = self.target_length / self.query_length;
+            let ratio = self.target_length as f64 / self.query_length as f64;
             (major_axis, (major_axis as f64 * ratio) as usize)
         } else {
-            let ratio = self.query_length / self.target_length;
+            let ratio = self.query_length as f64 / self.target_length as f64;
             ((major_axis as f64 * ratio) as usize, major_axis)
         }
     }
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            axes.0 as f64 * (x as f64 / self.query_length as f64),
-            axes.1 as f64 * (y as f64 / self.target_length as f64),
+            (axes.0-1) as f64 * (x as f64 / self.query_length as f64),
+            (axes.1-1) as f64 * (y as f64 / self.target_length as f64),
         )
     }
     /*
@@ -322,6 +332,7 @@ fn main() {
     let black = white.map(|ch| 255 - ch);
 
     let axes = paf.get_axes(major_axis);
+    //println!("axes = {} {}", axes.0, axes.1);
     let mut raw = vec![0u8; axes.0 * axes.1 * 3];
     let pixels = raw.as_rgb_mut();
 
@@ -349,10 +360,10 @@ fn main() {
     };
 
     // for each match, we draw a line on our raster using Xiaolin Wu's antialiased line algorithm
-    let draw_match = |_c, x: usize, y: usize, len: usize| {
-        //println!("(({}, {}), {}), ", x, y, len);
+    let draw_match = |_c, x: usize, rev: bool, y: usize, len: usize| {
+        //println!("draw_match {} {} {} {} {}", c, x, rev, y, len);
         let start = paf.project_xy(x, y, axes);
-        let end = paf.project_xy(x + len, y + len, axes);
+        let end = paf.project_xy(x + if rev { len } else { 0-len }, y + len, axes);
         //println!("start and end ({} {}) ({} {})", start.0, start.1, end.0, end.1);
         for ((x, y), val) in XiaolinWu::<f64, i64>::new(start, end) {
             let i: usize = (x as usize) + (y as usize * axes.0);
