@@ -1,11 +1,13 @@
 use std::fs::File;
 use std::io::{self, prelude::*, BufReader};
 use std::path::Path;
+use std::cmp;
 
 use boomphf::*;
 
 use rgb::*;
-//use lodepng::*;
+extern crate line_drawing;
+use line_drawing::XiaolinWu;
 
 use itertools::Itertools;
 
@@ -54,6 +56,10 @@ struct PafFile {
     query_mphf: Mphf<String>,
     // maps from sequence name to internal id
     target_mphf: Mphf<String>,
+    // query axis length
+    query_length: f64,
+    // target axis length
+    target_length: f64,
 }
 
 fn paf_query(line: &str) -> String {
@@ -146,6 +152,8 @@ impl PafFile {
             targets,
             query_mphf,
             target_mphf,
+            query_length: query_offset as f64,
+            target_length: target_offset as f64,
         }
     }
     fn global_query_start(self: &PafFile, idx: usize) -> usize {
@@ -158,8 +166,8 @@ impl PafFile {
         let query_id = self.query_mphf.hash(&paf_query(line)) as usize;
         let target_id = self.target_mphf.hash(&paf_target(line)) as usize;
         (
-            self.global_query_start(query_id),
-            self.global_target_start(target_id),
+            self.global_query_start(query_id) + paf_query_begin(line),
+            self.global_target_start(target_id) + paf_target_begin(line),
         )
     }
     fn for_each_match<F>(self: &PafFile, line: &str, mut func: F)
@@ -176,15 +184,17 @@ impl PafFile {
             .map(|s| s.strip_prefix("cg:Z:").unwrap())
             .collect::<Vec<&str>>()
         {
-            //println!("{}", cigar);
+            println!("{}", cigar);
             let mut first: usize = 0;
             for (i, b) in cigar.bytes().enumerate() {
                 let c = b as char;
-                //println!("{} {}", i, b as char);
+                println!("{} {}", i, b as char);
                 match c {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap() as usize;
                         func(c, query_pos, target_pos, n);
+                        query_pos += n;
+                        target_pos += n;
                         first = i+1;
                     }
                     'D' => {
@@ -202,9 +212,14 @@ impl PafFile {
             }
         }
     }
-    fn process(self: &PafFile) {
+    fn for_each_match_in_file<F>(self: &PafFile,
+                                 mut func: F)
+    where
+        F: FnMut(char, usize, usize, usize),
+    {
         for_each_line_in_file(&self.filename, |line: &str| {
             let (x, y) = self.global_start(line);
+
             println!(
                 "{} {} {} {} {} {}",
                 paf_query(line),
@@ -214,10 +229,35 @@ impl PafFile {
                 x,
                 y
             );
-            self.for_each_match(line, |c, x, y, d| print!(" | {} {} {} {}", c, x, y, d));
-            println!();
+
+            self.for_each_match(line, |c, x, y, d| func(c, x, y, d));
+            //println!();
         });
     }
+    fn get_axes(self: &PafFile, major_axis: usize) -> (usize, usize) {
+        //let max_length = cmp::max(self.query_length, self.target_length) as f64;
+        //println!("query = {} target = {}", self.query_length, self.target_length);
+        if self.query_length > self.target_length {
+            let ratio = self.target_length/self.query_length;
+            (major_axis,
+             (major_axis as f64 * ratio) as usize)
+        } else {
+            let ratio = self.query_length/self.target_length;
+            ((major_axis as f64 * ratio) as usize,
+             major_axis)
+        }
+    }
+    fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
+        println!("axes {} {}", axes.0, axes.1);
+        (axes.0 as f64 * (x as f64 / self.query_length as f64),
+         axes.1 as f64 * (y as f64 / self.target_length as f64))
+    }
+    /*
+    fn get_pixel(self: &PafFile, x: i64, y: i64, axes: (usize, usize)) -> usize {
+        let (q, t) = axes;
+        x * (self.query_length / q as f64).round() as usize * q + y * (self.target_length / t as f64).round() as usize
+    }
+*/
 }
 
 fn main() {
@@ -241,27 +281,48 @@ fn main() {
         .get_matches();
     let filename = matches.value_of("INPUT").unwrap();
     let paf = PafFile::new(filename);
-    paf.process();
 
     //let image = [255u8, 0, 0,   0, 255, 0,
     //             0, 0, 255,   0, 99, 99];
-    let px = RGB8 {
+    let white = RGB8 {
         r:255_u8,
-        g:0,
+        g:255,
         b:255,
     };
-    let inverted = px.map(|ch| 255 - ch);
-    let width = 1000;
-    let height = 1000;
-    let mut raw = vec![0u8; width*height*3];
+    let black = white.map(|ch| 255 - ch);
+    let major_axis = 1000;
+    //let height = 1000;
+    let axes = paf.get_axes(major_axis);
+    let mut raw = vec![0u8; axes.0*axes.1*3];
     let pixels = raw.as_rgb_mut();
     for i in pixels.iter_mut() {
-        *i = px;
+        *i = white;
     }
+    println!("got axes {} {}", axes.0, axes.1);
+    //let (query_axis, target_axis) = axes;
+    //paf.process();
+    let draw_match = |c, x: usize, y: usize, len: usize| {
+        println!("(({}, {}), {}), ", x, y, len);
+        let start = paf.project_xy(x, y, axes);
+        let end = paf.project_xy(x+len, y+len, axes);
+        println!("start and end ({} {}) ({} {})", start.0, start.1, end.0, end.1);
+        for ((x, y), val) in XiaolinWu::<f64, i64>::new(start, end) {
+            //255 * value
+            //let i = (paf.into_axes(x, axes) as usize) * width + (y as usize);
+            let i: usize = (x as usize) + (y as usize * axes.0);
+            pixels[i] = RGB8 {
+                r:((255.0 * (1.0-val)).round() as u8),
+                g:((255.0 * (1.0-val)).round() as u8),
+                b:((255.0 * (1.0-val)).round() as u8),
+            };
+        }
+    };
+    paf.for_each_match_in_file(draw_match);
+
     let path = &Path::new("write_test.png");
     // encode_file takes the path to the image, a u8 array,
     // the width, the height, the color mode, and the bit depth
-    if let Err(e) = lodepng::encode_file(path, &raw, width, height, lodepng::ColorType::RGB, 8) {
+    if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8) {
         panic!("failed to write png: {:?}", e);
     }
 
