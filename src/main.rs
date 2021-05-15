@@ -48,18 +48,18 @@ impl AlignedSeq {
 struct PafFile {
     // our input file
     filename: String,
-    // each query name in order of first appearance
-    queries: Vec<AlignedSeq>,
     // each target name in order of first appearance
     targets: Vec<AlignedSeq>,
-    // maps from sequence name to internal id
-    query_mphf: Mphf<String>,
+    // each query name in order of first appearance
+    queries: Vec<AlignedSeq>,
     // maps from sequence name to internal id
     target_mphf: Mphf<String>,
-    // query axis length
-    query_length: f64,
+    // maps from sequence name to internal id
+    query_mphf: Mphf<String>,
     // target axis length
     target_length: f64,
+    // query axis length
+    query_length: f64,
 }
 
 fn paf_query(line: &str) -> String {
@@ -150,12 +150,12 @@ impl PafFile {
         });
         PafFile {
             filename: filename.to_string(),
-            queries,
             targets,
-            query_mphf,
+            queries,
             target_mphf,
-            query_length: query_offset as f64,
+            query_mphf,
             target_length: target_offset as f64,
+            query_length: query_offset as f64,
         }
     }
     fn query_range(self: &PafFile, name: &str, start: usize, end: usize) -> (usize, usize) {
@@ -165,8 +165,8 @@ impl PafFile {
         let gstart = self.global_query_start(query_id);
         println!("global query start {}", gstart);
         println!("query length {}", length);
-        let final_end = gstart + (length - start);
-        let final_start = gstart + (length - end);
+        let final_start = gstart + start;
+        let final_end = gstart + end;
         println!("hmm {} {}", final_start, final_end);
         (final_start, final_end)
     }
@@ -198,8 +198,7 @@ impl PafFile {
         (
             self.global_target_start(target_id) + paf_target_begin(line),
             if query_rev {
-                self.global_query_start(query_id)
-                    + (self.query_length(query_id) - paf_query_end(line))
+                self.global_query_start(query_id) + paf_query_end(line)
             } else {
                 self.global_query_start(query_id) + paf_query_begin(line)
             },
@@ -211,8 +210,8 @@ impl PafFile {
     {
         let query_rev = paf_query_is_rev(line);
         let (x, y) = self.global_start(line, query_rev);
-        let mut query_pos = x;
-        let mut target_pos = y;
+        let mut target_pos = x;
+        let mut query_pos = y;
         // find and walk the cigar string
         //println!("{}", line);
         for cigar in line
@@ -299,8 +298,8 @@ impl PafFile {
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            (axes.0 - 1) as f64 * (x as f64 / self.target_length as f64),
-            (axes.1 - 1) as f64 * (y as f64 / self.query_length as f64),
+            axes.0 as f64 * (x as f64 / self.target_length as f64),
+            axes.1 as f64 * (y as f64 / self.query_length as f64),
         )
     }
     fn project_xy_zoom(
@@ -312,9 +311,9 @@ impl PafFile {
     ) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            (axes.0 - 1) as f64
+            axes.0 as f64
                 * (((x as f64) - (zoom.0 .0 as f64)) / ((zoom.0 .1 - zoom.0 .0) as f64)),
-            (axes.1 - 1) as f64
+            axes.1 as f64
                 * (((y as f64) - (zoom.1 .0 as f64)) / ((zoom.1 .1 - zoom.1 .0) as f64)),
         )
     }
@@ -384,7 +383,8 @@ fn main() {
     let dark = matches.is_present("dark");
 
     let using_zoom = matches.is_present("range");
-    let (query_range, target_range): ((usize, usize), (usize, usize)) = if using_zoom {
+    let (target_range, query_range): ((usize, usize), (usize, usize)) = if using_zoom {
+
         let splitv = matches
             .value_of("range")
             .unwrap()
@@ -396,6 +396,7 @@ fn main() {
                 matches.value_of("range").unwrap()
             );
         }
+
         let target_name = splitv[0].split(':').next().unwrap();
         let target_start = splitv[0]
             .split(':')
@@ -415,7 +416,7 @@ fn main() {
             .unwrap()
             .parse::<usize>()
             .unwrap();
-        let target_range = paf.target_range(target_name, target_start, target_end);
+
         let query_name = splitv[1].split(':').next().unwrap();
         let query_start = splitv[1]
             .split(':')
@@ -435,19 +436,9 @@ fn main() {
             .unwrap()
             .parse::<usize>()
             .unwrap();
-        let query_range = paf.query_range(query_name, query_start, query_end);
 
-        //self.global_query_start(query_id)
-        //    + (self.query_length(query_id) - paf_query_begin(line))
-
-        /*
-        let b = paf.project_xy(query_range.0, target_range.0, a);
-        let c = paf.project_xy(query_range.1, target_range.1, a);
-        query_range = (b.0.round() as usize, c.0.round() as usize);
-        target_range = (b.1.round() as usize, c.1.round() as usize);
-         */
-
-        (target_range, query_range)
+        (paf.target_range(target_name, target_start, target_end),
+         paf.query_range(query_name, query_start, query_end))
     } else {
         (
             (0, paf.target_length as usize),
@@ -468,11 +459,11 @@ fn main() {
         query_range.0, query_range.1, target_range.0, target_range.1
     );
     let axes = if using_zoom {
-        paf.get_axes_zoom(major_axis, (query_range, target_range))
+        paf.get_axes_zoom(major_axis, (target_range, query_range))
     } else {
         paf.get_axes(major_axis)
     };
-    //println!("axes = {} {}", axes.0, axes.1);
+    println!("axes = {} {}", axes.0, axes.1);
     let mut raw = vec![0u8; axes.0 * axes.1 * 3];
     let pixels = raw.as_rgb_mut();
 
@@ -501,7 +492,7 @@ fn main() {
 
     let get_coords = |x: usize, y: usize| {
         if using_zoom {
-            paf.project_xy_zoom(x, y, axes, (query_range, target_range))
+            paf.project_xy_zoom(x, y, axes, (target_range, query_range))
         } else {
             paf.project_xy(x, y, axes)
         }
@@ -516,10 +507,11 @@ fn main() {
             "start and end ({} {}) ({} {})",
             start.0, start.1, end.0, end.1
         );
-        for ((x, y), val) in XiaolinWu::<f64, i64>::new(start, end) {
-            if x >= 0 && x < (axes.0 as i64) && y >= 0 && y < (axes.1 as i64) {
-                // nb we invert the y axis here for rendering
-                let i: usize = (x as usize) + ((axes.1 - y as usize) * axes.0);
+        for ((j, i), val) in XiaolinWu::<f64, i64>::new(start, end) {
+            println!("checking pixel {} {} {}", i, j, val);
+            if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
+                println!("drawing pixel {} {} {}", i, j, val);
+                let i: usize = (i as usize) + (((axes.1 - 1) - j as usize) * axes.0);
                 pixels[i] = get_color(val);
             }
         }
