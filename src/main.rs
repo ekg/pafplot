@@ -196,15 +196,13 @@ impl PafFile {
         let query_id = self.query_mphf.hash(&paf_query(line)) as usize;
         let target_id = self.target_mphf.hash(&paf_target(line)) as usize;
         (
+            self.global_target_start(target_id) + paf_target_begin(line),
             if query_rev {
                 self.global_query_start(query_id)
                     + (self.query_length(query_id) - paf_query_end(line))
             } else {
-                self.global_query_start(query_id)
-                    + (self.query_length(query_id) - paf_query_begin(line))
+                self.global_query_start(query_id) + paf_query_begin(line)
             },
-            //self.global_query_start(query_id) + paf_query_begin(line),
-            self.global_target_start(target_id) + paf_target_begin(line),
         )
     }
     fn for_each_match<F>(self: &PafFile, line: &str, mut func: F)
@@ -232,7 +230,7 @@ impl PafFile {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap() as usize;
                         func(c, query_pos, query_rev, target_pos, n);
-                        query_pos += if query_rev { n } else { 0-n };
+                        query_pos += if query_rev { 0-n } else { n };
                         target_pos += n;
                         first = i + 1;
                     }
@@ -243,7 +241,7 @@ impl PafFile {
                     }
                     'I' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
-                        query_pos += if query_rev { n } else { 0-n };
+                        query_pos += if query_rev { 0-n } else { n };
                         first = i + 1;
                     }
                     _ => {}
@@ -275,30 +273,30 @@ impl PafFile {
     fn get_axes(self: &PafFile, major_axis: usize) -> (usize, usize) {
         //let max_length = cmp::max(self.query_length, self.target_length) as f64;
         //println!("query = {} target = {}", self.query_length, self.target_length);
-        if self.query_length > self.target_length {
-            let ratio = self.target_length as f64 / self.query_length as f64;
+        if self.target_length > self.query_length {
+            let ratio = self.query_length as f64 / self.target_length as f64;
             (major_axis, (major_axis as f64 * ratio) as usize)
         } else {
-            let ratio = self.query_length as f64 / self.target_length as f64;
+            let ratio = self.target_length as f64 / self.query_length as f64;
             ((major_axis as f64 * ratio) as usize, major_axis)
         }
     }
     fn get_axes_zoom(self: &PafFile, major_axis: usize, zoom: ((usize, usize), (usize, usize))) -> (usize, usize) {
-        let q_length = zoom.0.1 - zoom.0.0;
-        let t_length = zoom.1.1 - zoom.1.0;
-        if q_length > t_length {
-            let ratio = t_length as f64 / q_length as f64;
+        let t_length = zoom.0.1 - zoom.0.0;
+        let q_length = zoom.1.1 - zoom.1.0;
+        if t_length > q_length {
+            let ratio = q_length as f64 / t_length as f64;
             (major_axis, (major_axis as f64 * ratio) as usize)
         } else {
-            let ratio = q_length as f64 / t_length as f64;
+            let ratio = t_length as f64 / q_length as f64;
             ((major_axis as f64 * ratio) as usize, major_axis)
         }
     }
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            (axes.0-1) as f64 * (x as f64 / self.query_length as f64),
-            (axes.1-1) as f64 * (y as f64 / self.target_length as f64),
+            (axes.0-1) as f64 * (x as f64 / self.target_length as f64),
+            (axes.1-1) as f64 * (y as f64 / self.query_length as f64),
         )
     }
     fn project_xy_zoom(self: &PafFile, x: usize, y: usize, axes: (usize, usize), zoom: ((usize, usize), (usize, usize))) -> (f64, f64) {
@@ -354,7 +352,7 @@ fn main() {
                 .takes_value(true)
                 .short("r")
                 .long("range")
-                .help("Plot the given 2D range in query and target rather than the full matrix seqA:10-200,seqB:300-400"),
+                .help("Plot the given 2D range in target and query rather than the full matrix seqA:10-200,seqB:300-400"),
         )
         .get_matches();
 
@@ -380,14 +378,14 @@ fn main() {
             if splitv.len() != 2 {
                 panic!("[pafplot::main] invalid range specification {}", matches.value_of("range").unwrap());
             }
-            let query_name = splitv[0].split(':').next().unwrap();
-            let query_start = splitv[0].split(':').nth(1).unwrap().split('-').next().unwrap().parse::<usize>().unwrap();
-            let query_end = splitv[0].split(':').nth(1).unwrap().split('-').nth(1).unwrap().parse::<usize>().unwrap();
-            let query_range = paf.query_range(query_name, query_start, query_end);
-            let target_name = splitv[1].split(':').next().unwrap();
-            let target_start = splitv[1].split(':').nth(1).unwrap().split('-').next().unwrap().parse::<usize>().unwrap();
-            let target_end = splitv[1].split(':').nth(1).unwrap().split('-').nth(1).unwrap().parse::<usize>().unwrap();
+            let target_name = splitv[0].split(':').next().unwrap();
+            let target_start = splitv[0].split(':').nth(1).unwrap().split('-').next().unwrap().parse::<usize>().unwrap();
+            let target_end = splitv[0].split(':').nth(1).unwrap().split('-').nth(1).unwrap().parse::<usize>().unwrap();
             let target_range = paf.target_range(target_name, target_start, target_end);
+            let query_name = splitv[1].split(':').next().unwrap();
+            let query_start = splitv[1].split(':').nth(1).unwrap().split('-').next().unwrap().parse::<usize>().unwrap();
+            let query_end = splitv[1].split(':').nth(1).unwrap().split('-').nth(1).unwrap().parse::<usize>().unwrap();
+            let query_range = paf.query_range(query_name, query_start, query_end);
 
             //self.global_query_start(query_id)
             //    + (self.query_length(query_id) - paf_query_begin(line))
@@ -399,9 +397,9 @@ fn main() {
             target_range = (b.1.round() as usize, c.1.round() as usize);
              */
 
-            (query_range, target_range)
+            (target_range, query_range)
         } else {
-            ((0, paf.query_length as usize), (0, paf.target_length as usize))
+            ((0, paf.target_length as usize), (0, paf.query_length as usize))
         };
 
     // colors we use
@@ -456,11 +454,11 @@ fn main() {
     let draw_match = |_c, x: usize, rev: bool, y: usize, len: usize| {
         println!("draw_match {} {} {} {} {}", _c, x, rev, y, len);
         let start = get_coords(x, y);
-        let end = get_coords(x + if rev { len } else { 0-len }, y + len);
+        let end = get_coords(x + if rev { 0-len } else { len }, y + len);
         println!("start and end ({} {}) ({} {})", start.0, start.1, end.0, end.1);
         for ((x, y), val) in XiaolinWu::<f64, i64>::new(start, end) {
             if x >= 0 && x < (axes.0 as i64) && y >= 0 && y < (axes.1 as i64) {
-                let i: usize = (x as usize) + (y as usize * axes.0);
+                let i: usize = (x as usize) + ((axes.1-y as usize) * axes.0);
                 pixels[i] = get_color(val);
             }
         }
