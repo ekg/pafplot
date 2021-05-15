@@ -159,23 +159,22 @@ impl PafFile {
         }
     }
     fn query_range(self: &PafFile, name: &str, start: usize, end: usize) -> (usize, usize) {
-        println!("query_range {} {}", start, end);
+        //println!("query_range {} {}", start, end);
         let query_id = self.query_mphf.hash(&name.into()) as usize;
         let length = self.query_length(query_id);
         let gstart = self.global_query_start(query_id);
-        println!("global query start {}", gstart);
-        println!("query length {}", length);
+        //println!("global query start {}", gstart);
+        //println!("query length {}", length);
         let final_start = gstart + start;
         let final_end = gstart + end;
-        println!("hmm {} {}", final_start, final_end);
         (final_start, final_end)
     }
     fn target_range(self: &PafFile, name: &str, start: usize, end: usize) -> (usize, usize) {
-        println!("target_range {} {}", start, end);
+        //println!("target_range {} {}", start, end);
         let target_id = self.target_mphf.hash(&name.into()) as usize;
         //let length = self.target_length(target_id);
         let gstart = self.global_target_start(target_id);
-        println!("global target start {}", gstart);
+        //println!("global target start {}", gstart);
         let final_start = gstart + start;
         let final_end = gstart + end;
         (final_start, final_end)
@@ -454,16 +453,18 @@ fn main() {
     };
     let black = white.map(|ch| 255 - ch);
 
+    /*
     println!(
         "getting axes query=({} {}) target=({} {})",
         query_range.0, query_range.1, target_range.0, target_range.1
     );
+     */
     let axes = if using_zoom {
         paf.get_axes_zoom(major_axis, (target_range, query_range))
     } else {
         paf.get_axes(major_axis)
     };
-    println!("axes = {} {}", axes.0, axes.1);
+    //println!("axes = {} {}", axes.0, axes.1);
     let mut raw = vec![0u8; axes.0 * axes.1 * 3];
     let pixels = raw.as_rgb_mut();
 
@@ -500,17 +501,19 @@ fn main() {
 
     // for each match, we draw a line on our raster using Xiaolin Wu's antialiased line algorithm
     let draw_match = |_c, x: usize, rev: bool, y: usize, len: usize| {
-        println!("draw_match {} {} {} {} {}", _c, x, rev, y, len);
+        //println!("draw_match {} {} {} {} {}", _c, x, rev, y, len);
         let start = get_coords(x, y);
         let end = get_coords(x + if rev { 0 - len } else { len }, y + len);
+        /*
         println!(
             "start and end ({} {}) ({} {})",
             start.0, start.1, end.0, end.1
         );
+         */
         for ((j, i), val) in XiaolinWu::<f64, i64>::new(start, end) {
-            println!("checking pixel {} {} {}", i, j, val);
+            //println!("checking pixel {} {} {}", i, j, val);
             if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
-                println!("drawing pixel {} {} {}", i, j, val);
+                //println!("drawing pixel {} {} {}", i, j, val);
                 let i: usize = (i as usize) + (((axes.1 - 1) - j as usize) * axes.0);
                 pixels[i] = get_color(val);
             }
