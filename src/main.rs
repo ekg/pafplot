@@ -121,19 +121,17 @@ impl PafFile {
             let query_id = query_mphf.hash(&query_name) as usize;
             if !seen_queries[query_id] {
                 seen_queries[query_id] = true;
-                let query_length = paf_query_length(l);
                 let mut query = &mut queries[query_id];
                 query.name = query_name;
-                query.length = query_length;
+                query.length = paf_query_length(l);
             }
             let target_name: String = paf_target(l);
             let target_id = target_mphf.hash(&target_name) as usize;
             if !seen_targets[target_id] {
                 seen_targets[target_id] = true;
-                let target_length = paf_target_length(l);
                 let mut target = &mut targets[target_id];
                 target.name = target_name;
-                target.length = target_length;
+                target.length = paf_target_length(l);
             }
         });
         let mut targets_sort = targets.clone();
@@ -152,8 +150,8 @@ impl PafFile {
         queries_sort.sort_by(|a, b| b.length.partial_cmp(&a.length).unwrap());
         let mut query_idx: usize = 0;
         let mut query_offset: usize = 0;
-        queries_sort.iter().for_each(|t| {
-            let query_id = query_mphf.hash(&t.name) as usize;
+        queries_sort.iter().for_each(|q| {
+            let query_id = query_mphf.hash(&q.name) as usize;
             let mut query = &mut queries[query_id];
             query.rank = query_idx;
             query_idx += 1;
@@ -173,7 +171,7 @@ impl PafFile {
     fn query_range(self: &PafFile, name: &str, start: usize, end: usize) -> (usize, usize) {
         //println!("query_range {} {}", start, end);
         let query_id = self.query_mphf.hash(&name.into()) as usize;
-        let length = self.query_length(query_id);
+        //let length = self.query_length(query_id);
         let gstart = self.global_query_start(query_id);
         //println!("global query start {}", gstart);
         //println!("query length {}", length);
@@ -510,6 +508,32 @@ fn main() {
             paf.project_xy(x, y, axes)
         }
     };
+
+    // draw our grid
+    paf.targets.iter().for_each(|target| {
+        if target.offset > 0 {
+            let start = get_coords(target.offset, 0);
+            let end = get_coords(target.offset, paf.query_length as usize);
+            for ((i, j), val) in XiaolinWu::<f64, i64>::new(start, end) {
+                if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
+                    let i: usize = (i as usize) + (((axes.1 - 1) - j as usize) * axes.0);
+                    pixels[i] = get_color(val * 0.2);
+                }
+            }
+        }
+    });
+    paf.queries.iter().for_each(|query| {
+        if query.offset > 0 {
+            let start = get_coords(0, query.offset);
+            let end = get_coords(paf.target_length as usize, query.offset);
+            for ((i, j), val) in XiaolinWu::<f64, i64>::new(start, end) {
+                if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
+                    let i: usize = (i as usize) + (((axes.1 - 1) - j as usize) * axes.0);
+                    pixels[i] = get_color(val * 0.2);
+                }
+            }
+        }
+    });
 
     // for each match, we draw a line on our raster using Xiaolin Wu's antialiased line algorithm
     let draw_match = |_c, x: usize, rev: bool, y: usize, len: usize| {
