@@ -116,10 +116,6 @@ impl PafFile {
         let mut seen_targets = vec![false; target_names.len()];
         let mut queries: Vec<AlignedSeq> = vec![AlignedSeq::new(); query_names.len()];
         let mut targets: Vec<AlignedSeq> = vec![AlignedSeq::new(); target_names.len()];
-        let mut query_idx: usize = 0;
-        let mut target_idx: usize = 0;
-        let mut query_offset: usize = 0;
-        let mut target_offset: usize = 0;
         for_each_line_in_file(filename, |l: &str| {
             let query_name: String = paf_query(l);
             let query_id = query_mphf.hash(&query_name) as usize;
@@ -128,11 +124,7 @@ impl PafFile {
                 let query_length = paf_query_length(l);
                 let mut query = &mut queries[query_id];
                 query.name = query_name;
-                query.rank = query_idx;
-                query_idx += 1;
                 query.length = query_length;
-                query.offset = query_offset;
-                query_offset += query_length;
             }
             let target_name: String = paf_target(l);
             let target_id = target_mphf.hash(&target_name) as usize;
@@ -141,12 +133,32 @@ impl PafFile {
                 let target_length = paf_target_length(l);
                 let mut target = &mut targets[target_id];
                 target.name = target_name;
-                target.rank = target_idx;
-                target_idx += 1;
                 target.length = target_length;
-                target.offset = target_offset;
-                target_offset += target_length;
             }
+        });
+        let mut targets_sort = targets.clone();
+        targets_sort.sort_by(|a, b| b.length.partial_cmp(&a.length).unwrap());
+        let mut target_idx: usize = 0;
+        let mut target_offset: usize = 0;
+        targets_sort.iter().for_each(|t| {
+            let target_id = target_mphf.hash(&t.name) as usize;
+            let mut target = &mut targets[target_id];
+            target.rank = target_idx;
+            target_idx += 1;
+            target.offset = target_offset;
+            target_offset += target.length;
+        });
+        let mut queries_sort = queries.clone();
+        queries_sort.sort_by(|a, b| b.length.partial_cmp(&a.length).unwrap());
+        let mut query_idx: usize = 0;
+        let mut query_offset: usize = 0;
+        queries_sort.iter().for_each(|t| {
+            let query_id = query_mphf.hash(&t.name) as usize;
+            let mut query = &mut queries[query_id];
+            query.rank = query_idx;
+            query_idx += 1;
+            query.offset = query_offset;
+            query_offset += query.length;
         });
         PafFile {
             filename: filename.to_string(),
