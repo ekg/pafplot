@@ -94,11 +94,10 @@ fn paf_target_begin(line: &str) -> usize {
     line.split('\t').nth(7).unwrap().parse::<usize>().unwrap()
 }
 
-/*
 fn paf_target_end(line: &str) -> usize {
     line.split('\t').nth(8).unwrap().parse::<usize>().unwrap()
 }
-*/
+
 
 impl PafFile {
     fn new(filename: &str) -> Self {
@@ -223,11 +222,21 @@ impl PafFile {
         let mut query_pos = y;
         // find and walk the cigar string
         //println!("{}", line);
-        for cigar in line
+        let mut cigars = line
             .split('\t')
             .skip_while(|s| !s.starts_with("cg:Z:"))
             .map(|s| s.strip_prefix("cg:Z:").unwrap())
-            .collect::<Vec<&str>>()
+            .collect::<Vec<&str>>();
+
+        // Compute the fake CIGAR, in case the real one is missing in the line
+        let query_len = paf_query_end(line) - paf_query_begin(line);
+        let target_len = paf_target_end(line) - paf_target_begin(line);
+        let fake_cigar = format!("{}M", if query_len < target_len { query_len } else { target_len });
+        if cigars.is_empty() {
+            cigars.push(fake_cigar.as_str());
+        }
+
+        for cigar in cigars
         {
             //println!("{}", cigar);
             let mut first: usize = 0;
