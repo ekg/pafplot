@@ -191,12 +191,14 @@ impl PafFile {
     fn global_query_start(self: &PafFile, idx: usize) -> usize {
         self.queries[idx].offset
     }
+    #[allow(dead_code)]
     fn query_length(self: &PafFile, idx: usize) -> usize {
         self.queries[idx].length
     }
     fn global_target_start(self: &PafFile, idx: usize) -> usize {
         self.targets[idx].offset
     }
+    #[allow(dead_code)]
     fn target_length(self: &PafFile, idx: usize) -> usize {
         self.targets[idx].length
     }
@@ -316,7 +318,7 @@ impl PafFile {
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            axes.0 as f64 * (x as f64 / self.target_length as f64),
+            axes.0 as f64 - (axes.0 as f64 * (x as f64 / self.target_length as f64)),
             axes.1 as f64 * (y as f64 / self.query_length as f64),
         )
     }
@@ -329,8 +331,8 @@ impl PafFile {
     ) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            axes.0 as f64
-                * (((x as f64) - (zoom.0 .0 as f64)) / ((zoom.0 .1 - zoom.0 .0) as f64)),
+            axes.0 as f64 - (axes.0 as f64
+                * (((x as f64) - (zoom.0 .0 as f64)) / ((zoom.0 .1 - zoom.0 .0) as f64))),
             axes.1 as f64
                 * (((y as f64) - (zoom.1 .0 as f64)) / ((zoom.1 .1 - zoom.1 .0) as f64)),
         )
@@ -402,7 +404,6 @@ fn main() {
 
     let using_zoom = matches.is_present("range");
     let (target_range, query_range): ((usize, usize), (usize, usize)) = if using_zoom {
-
         let splitv = matches
             .value_of("range")
             .unwrap()
@@ -467,8 +468,8 @@ fn main() {
     // colors we use
     let white = RGB8 {
         r: 255_u8,
-        g: 255,
-        b: 255,
+        g: 255_u8,
+        b: 255_u8,
     };
     let black = white.map(|ch| 255 - ch);
 
