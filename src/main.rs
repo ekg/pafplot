@@ -668,7 +668,7 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
 
 fn generate_html_viewer(
     paf: &PafFile,
-    axes: (usize, usize),
+    _axes: (usize, usize),
     output_filename: &str,
     dark: bool,
     using_zoom: bool,
@@ -710,20 +710,17 @@ fn generate_html_viewer(
             background-color: {};
             color: {};
             margin: 0;
-            padding: 20px;
-        }}
-        .container {{
-            max-width: 100vw;
-            overflow: auto;
-        }}
-        .plot-area {{
-            position: relative;
-            display: inline-block;
-            margin: 50px;
+            padding: 0;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
         }}
         #plotCanvas {{
-            display: block;
-            border: 1px solid {};
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
             cursor: crosshair;
         }}
         .tooltip {{
@@ -779,9 +776,42 @@ fn generate_html_viewer(
             border: 1px solid {};
             padding: 15px;
             border-radius: 5px;
-            min-width: 300px;
-            font-size: 12px;
+            min-width: 250px;
+            font-size: 11px;
             z-index: 20;
+            opacity: 0.9;
+        }}
+        .config-panel {{
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background-color: {};
+            border: 1px solid {};
+            padding: 15px;
+            border-radius: 5px;
+            min-width: 200px;
+            font-size: 11px;
+            z-index: 20;
+            opacity: 0.9;
+        }}
+        .config-panel h3 {{
+            margin-top: 0;
+            margin-bottom: 10px;
+        }}
+        .config-control {{
+            margin-bottom: 10px;
+        }}
+        .config-control label {{
+            display: inline-block;
+            width: 100px;
+            font-size: 10px;
+        }}
+        .config-control input[type="range"] {{
+            width: 100px;
+        }}
+        .config-control span {{
+            font-size: 10px;
+            margin-left: 5px;
         }}
         .minimap {{
             position: fixed;
@@ -815,22 +845,30 @@ fn generate_html_viewer(
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>PAF Plot Viewer</h1>
-        <p>File: {} | Alignments: {} | Target sequences: {} | Query sequences: {}</p>
-        
-        <div class="controls">
-            <button onclick="resetZoom()">Reset Zoom</button>
-            <span class="zoom-info">Scroll wheel to zoom, left-drag to pan, right-drag to zoom-to-box</span>
+    <canvas id="plotCanvas"></canvas>
+    <div class="tooltip" id="tooltip"></div>
+    
+    <div class="config-panel">
+        <h3>Settings</h3>
+        <div class="config-control">
+            <label>Line Width:</label>
+            <input type="range" id="lineWidthSlider" min="0.1" max="2" step="0.1" value="0.5">
+            <span id="lineWidthValue">0.5x</span>
         </div>
-        
-        <div class="plot-area" id="plotArea">
-            <canvas id="plotCanvas" width="{}" height="{}"></canvas>
-            <div class="tooltip" id="tooltip"></div>
-            
-            <div class="labels target-labels" id="targetLabels"></div>
-            <div class="labels query-labels" id="queryLabels"></div>
+        <div class="config-control">
+            <label>Grid Opacity:</label>
+            <input type="range" id="gridOpacitySlider" min="0" max="1" step="0.1" value="0.3">
+            <span id="gridOpacityValue">30%</span>
         </div>
+        <div class="config-control">
+            <label>Show Details:</label>
+            <input type="checkbox" id="showDetailsCheckbox" checked>
+        </div>
+        <div class="config-control">
+            <button onclick="resetZoom()">Reset View</button>
+            <button id="undoZoomBtn" onclick="undoZoom()" disabled>Undo Zoom</button>
+        </div>
+    </div>
         
         <div class="info-panel">
             <h3>Current Position</h3>
@@ -857,11 +895,21 @@ fn generate_html_viewer(
         const sequenceInfo = document.getElementById('sequenceInfo');
         const zoomLevel = document.getElementById('zoomLevel');
         const panInfo = document.getElementById('panInfo');
-        const targetLabels = document.getElementById('targetLabels');
-        const queryLabels = document.getElementById('queryLabels');
         const minimapCanvas = document.getElementById('minimapCanvas');
         const minimapCtx = minimapCanvas.getContext('2d');
         const minimapViewport = document.getElementById('minimapViewport');
+        
+        // Configuration controls
+        const lineWidthSlider = document.getElementById('lineWidthSlider');
+        const lineWidthValue = document.getElementById('lineWidthValue');
+        const gridOpacitySlider = document.getElementById('gridOpacitySlider');
+        const gridOpacityValue = document.getElementById('gridOpacityValue');
+        const showDetailsCheckbox = document.getElementById('showDetailsCheckbox');
+        
+        // Configuration values
+        let lineWidthMultiplier = 0.5;
+        let gridOpacity = 0.3;
+        let showDetails = true;
 
         // Plot data
         const alignments = {};
@@ -869,10 +917,32 @@ fn generate_html_viewer(
         const detailedAlignments = {};
         const targets = {};
         const queries = {};
-        const canvasWidth = {};
-        const canvasHeight = {};
+        let canvasWidth = window.innerWidth;
+        let canvasHeight = window.innerHeight;
         const targetLength = {};
         const queryLength = {};
+        
+        // Calculate plot dimensions maintaining 1:1 aspect ratio
+        let plotWidth, plotHeight, plotOffsetX, plotOffsetY;
+        
+        function calculatePlotDimensions() {{
+            const aspectRatio = targetLength / queryLength;
+            const viewportAspect = canvasWidth / canvasHeight;
+            
+            if (aspectRatio > viewportAspect) {{
+                // Target is wider - fit to width
+                plotWidth = canvasWidth * 0.9;  // 90% of viewport width
+                plotHeight = plotWidth / aspectRatio;
+                plotOffsetX = canvasWidth * 0.05;
+                plotOffsetY = (canvasHeight - plotHeight) / 2;
+            }} else {{
+                // Query is taller - fit to height
+                plotHeight = canvasHeight * 0.9;  // 90% of viewport height
+                plotWidth = plotHeight * aspectRatio;
+                plotOffsetX = (canvasWidth - plotWidth) / 2;
+                plotOffsetY = canvasHeight * 0.05;
+            }}
+        }}
         const usingZoom = {};
         const targetRange = {};
         const queryRange = {};
@@ -896,6 +966,36 @@ fn generate_html_viewer(
         let boxStartY = 0;
         let boxEndX = 0;
         let boxEndY = 0;
+        
+        // Zoom history for undo
+        const zoomHistory = [];
+        const maxZoomHistory = 50;
+        
+        function saveZoomState() {{
+            zoomHistory.push({{ zoom: zoom, panX: panX, panY: panY }});
+            if (zoomHistory.length > maxZoomHistory) {{
+                zoomHistory.shift();
+            }}
+            updateUndoButton();
+        }}
+        
+        function undoZoom() {{
+            if (zoomHistory.length > 0) {{
+                const state = zoomHistory.pop();
+                zoom = state.zoom;
+                panX = state.panX;
+                panY = state.panY;
+                updateDisplay();
+                updateUndoButton();
+            }}
+        }}
+        
+        function updateUndoButton() {{
+            const undoBtn = document.getElementById('undoZoomBtn');
+            if (undoBtn) {{
+                undoBtn.disabled = zoomHistory.length === 0;
+            }}
+        }}
 
         // Colors
         const backgroundColor = darkMode ? '#1a1a1a' : '#ffffff';
@@ -963,8 +1063,8 @@ fn generate_html_viewer(
             positionBuffer = gl.createBuffer();
             colorBuffer = gl.createBuffer();
             
-            // Set clear color
-            const bgColor = hexToRgb(backgroundColor);
+            // Set clear color - use a slightly different color to distinguish plot area
+            const bgColor = hexToRgb(darkMode ? '#0a0a0a' : '#f8f8f8');
             gl.clearColor(bgColor.r, bgColor.g, bgColor.b, 1.0);
             
             // Enable blending for anti-aliasing
@@ -999,20 +1099,23 @@ fn generate_html_viewer(
             }} : {{ r: 0, g: 0, b: 0 }};
         }}
 
-        // Coordinate projection functions - match PNG generation exactly
+        // Coordinate projection functions - project to plot area
         function projectCoords(x, y) {{
             let projX, projY;
             if (usingZoom) {{
                 // Match project_xy_zoom from Rust code
-                projX = canvasWidth * ((x - targetRange[0]) / (targetRange[1] - targetRange[0]));
-                projY = canvasHeight * ((y - queryRange[0]) / (queryRange[1] - queryRange[0]));
+                projX = plotWidth * ((x - targetRange[0]) / (targetRange[1] - targetRange[0]));
+                projY = plotHeight * ((y - queryRange[0]) / (queryRange[1] - queryRange[0]));
             }} else {{
                 // Match project_xy from Rust code
-                projX = canvasWidth * (x / targetLength);
-                projY = canvasHeight * (y / queryLength);
+                projX = plotWidth * (x / targetLength);
+                projY = plotHeight * (y / queryLength);
             }}
             // Y-axis flip to match PNG (bottom-left to top-left origin)
-            projY = canvasHeight - projY;
+            projY = plotHeight - projY;
+            // Add plot offset
+            projX += plotOffsetX;
+            projY += plotOffsetY;
             return {{ x: projX, y: projY }};
         }}
 
@@ -1030,10 +1133,43 @@ fn generate_html_viewer(
             
             // Calculate pixels per base for determining detail level
             const pixelsPerBase = canvasWidth / viewWidth;
-            const showDetails = pixelsPerBase > 2; // Show CIGAR details when zoomed in enough
+            const shouldShowDetails = showDetails && pixelsPerBase > 2; // Show CIGAR details when enabled and zoomed in enough
             
             // Add grid lines (sequence boundaries)
             const gridColor = hexToRgb(borderColor);
+            const endLineColor = hexToRgb(darkMode ? '#666666' : '#999999');
+            
+            // Draw plot border
+            const borderCoords = [
+                projectCoords(0, 0),
+                projectCoords(targetLength, 0),
+                projectCoords(targetLength, queryLength),
+                projectCoords(0, queryLength)
+            ];
+            
+            // Top border
+            lineVertices.push(borderCoords[0].x, borderCoords[0].y);
+            lineVertices.push(borderCoords[1].x, borderCoords[1].y);
+            lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+            lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+            
+            // Right border
+            lineVertices.push(borderCoords[1].x, borderCoords[1].y);
+            lineVertices.push(borderCoords[2].x, borderCoords[2].y);
+            lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+            lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+            
+            // Bottom border
+            lineVertices.push(borderCoords[2].x, borderCoords[2].y);
+            lineVertices.push(borderCoords[3].x, borderCoords[3].y);
+            lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+            lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+            
+            // Left border
+            lineVertices.push(borderCoords[3].x, borderCoords[3].y);
+            lineVertices.push(borderCoords[0].x, borderCoords[0].y);
+            lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+            lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
             
             // Target boundaries (vertical lines)
             targets.forEach(target => {{
@@ -1043,9 +1179,18 @@ fn generate_html_viewer(
                     
                     lineVertices.push(coords.x, coords.y);
                     lineVertices.push(endCoords.x, endCoords.y);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 0.3);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 0.3);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
                 }}
+                
+                // Add sequence end lines
+                const endX = target.offset + target.length;
+                const endStart = projectCoords(endX, 0);
+                const endEnd = projectCoords(endX, queryLength);
+                lineVertices.push(endStart.x, endStart.y);
+                lineVertices.push(endEnd.x, endEnd.y);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
             }});
             
             // Query boundaries (horizontal lines)
@@ -1056,9 +1201,18 @@ fn generate_html_viewer(
                     
                     lineVertices.push(coords.x, coords.y);
                     lineVertices.push(endCoords.x, endCoords.y);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 0.3);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 0.3);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
                 }}
+                
+                // Add sequence end lines
+                const endY = query.offset + query.length;
+                const endStart = projectCoords(0, endY);
+                const endEnd = projectCoords(targetLength, endY);
+                lineVertices.push(endStart.x, endStart.y);
+                lineVertices.push(endEnd.x, endEnd.y);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
             }});
             
             // Draw alignments - use detailed ops if available and zoomed in
@@ -1066,7 +1220,7 @@ fn generate_html_viewer(
             const mismatchColor = hexToRgb(darkMode ? '#ff4444' : '#cc0000');
             const indelColor = hexToRgb(darkMode ? '#4444ff' : '#0000cc');
             
-            if (showDetails && detailedAlignments.length > 0) {{
+            if (shouldShowDetails && detailedAlignments.length > 0) {{
                 // Draw detailed CIGAR operations
                 detailedAlignments.forEach(alignment => {{
                     alignment.ops.forEach(op => {{
@@ -1147,10 +1301,10 @@ fn generate_html_viewer(
             
             if (lineVertices.length === 0) return;
             
-            // Calculate dynamic line width based on zoom
+            // Calculate dynamic line width based on zoom and user setting
             const baseLineWidth = 1.0;
             const zoomFactor = Math.max(1, Math.log2(zoom + 1));
-            const lineWidth = Math.min(10, baseLineWidth * zoomFactor);
+            const lineWidth = Math.min(10, baseLineWidth * zoomFactor * lineWidthMultiplier);
             gl.lineWidth(lineWidth);
             
             // Use shader program
@@ -1189,24 +1343,69 @@ fn generate_html_viewer(
         }}
         
         function drawSelectionBox() {{
-            // For now, we'll skip the selection box in WebGL
-            // Could be implemented with a separate draw call if needed
+            if (!isBoxSelecting) return;
+            
+            // Draw selection box using 2D canvas overlay
+            let canvas2d = document.getElementById('overlayCanvas');
+            if (!canvas2d) {{
+                // Create overlay canvas if it doesn't exist
+                const overlay = document.createElement('canvas');
+                overlay.id = 'overlayCanvas';
+                overlay.style.position = 'absolute';
+                overlay.style.top = '0';
+                overlay.style.left = '0';
+                overlay.style.width = '100%';
+                overlay.style.height = '100%';
+                overlay.style.pointerEvents = 'none';
+                overlay.style.zIndex = '10';
+                overlay.width = canvasWidth;
+                overlay.height = canvasHeight;
+                document.body.appendChild(overlay);
+                canvas2d = overlay;
+            }}
+            
+            const ctx2d = canvas2d.getContext('2d');
+            ctx2d.clearRect(0, 0, canvasWidth, canvasHeight);
+            
+            // Draw the selection box
+            ctx2d.strokeStyle = darkMode ? '#00ff00' : '#0088ff';
+            ctx2d.lineWidth = 2;
+            ctx2d.setLineDash([5, 5]);
+            ctx2d.strokeRect(
+                Math.min(boxStartX, boxEndX),
+                Math.min(boxStartY, boxEndY),
+                Math.abs(boxEndX - boxStartX),
+                Math.abs(boxEndY - boxStartY)
+            );
+            
+            // Fill with semi-transparent color
+            ctx2d.fillStyle = darkMode ? 'rgba(0, 255, 0, 0.1)' : 'rgba(0, 136, 255, 0.1)';
+            ctx2d.fillRect(
+                Math.min(boxStartX, boxEndX),
+                Math.min(boxStartY, boxEndY),
+                Math.abs(boxEndX - boxStartX),
+                Math.abs(boxEndY - boxStartY)
+            );
         }}
 
         function pixelToGenomicCoords(pixelX, pixelY) {{
-            // Convert screen coordinates back to projected coordinates
-            const projX = (pixelX - panX) / zoom;
-            const projY = (pixelY - panY) / zoom;
+            // Convert screen coordinates to plot coordinates
+            const plotX = (pixelX - panX) / zoom;
+            const plotY = (pixelY - panY) / zoom;
             
-            // Reverse the projection (inverse of projectCoords)
+            // Remove plot offset to get relative position in plot
+            const relX = plotX - plotOffsetX;
+            const relY = plotY - plotOffsetY;
+            
+            // Convert to genomic coordinates
             let genomicX, genomicY;
             
             if (usingZoom) {{
-                genomicX = targetRange[0] + (projX / canvasWidth) * (targetRange[1] - targetRange[0]);
-                genomicY = queryRange[0] + ((canvasHeight - projY) / canvasHeight) * (queryRange[1] - queryRange[0]);
+                genomicX = targetRange[0] + (relX / plotWidth) * (targetRange[1] - targetRange[0]);
+                genomicY = queryRange[0] + ((plotHeight - relY) / plotHeight) * (queryRange[1] - queryRange[0]);
             }} else {{
-                genomicX = (projX / canvasWidth) * targetLength;
-                genomicY = ((canvasHeight - projY) / canvasHeight) * queryLength;
+                genomicX = (relX / plotWidth) * targetLength;
+                genomicY = ((plotHeight - relY) / plotHeight) * queryLength;
             }}
             
             return {{
@@ -1321,7 +1520,6 @@ fn generate_html_viewer(
         function updateDisplay() {{
             prepareLineData();  // Rebuild line data with frustum culling
             drawPlot();
-            updateLabels();
             drawMinimap();
             
             // Update zoom info
@@ -1430,6 +1628,13 @@ fn generate_html_viewer(
                         boxWidth,
                         boxHeight
                     );
+                }} else {{
+                    // Clear the overlay if box was too small
+                    const canvas2d = document.getElementById('overlayCanvas');
+                    if (canvas2d) {{
+                        const ctx2d = canvas2d.getContext('2d');
+                        ctx2d.clearRect(0, 0, canvasWidth, canvasHeight);
+                    }}
                 }}
                 
                 updateDisplay();
@@ -1450,9 +1655,12 @@ fn generate_html_viewer(
             
             // More responsive zoom factors
             const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-            const newZoom = Math.max(0.1, Math.min(10000, zoom * zoomFactor));
+            const newZoom = Math.max(0.1, Math.min(100000, zoom * zoomFactor));
             
             if (newZoom !== zoom) {{
+                // Save current state before zooming
+                saveZoomState();
+                
                 // Calculate the point under the mouse in canvas space (before zoom)
                 const pointX = (mouseX - panX) / zoom;
                 const pointY = (mouseY - panY) / zoom;
@@ -1469,25 +1677,37 @@ fn generate_html_viewer(
         }}, {{ passive: false }});
 
         function zoomToBox(boxX, boxY, boxWidth, boxHeight) {{
-            // Calculate zoom to fit the selected box in the viewport
-            const zoomX = canvasWidth / boxWidth;
-            const zoomY = canvasHeight / boxHeight;
-            const newZoom = Math.min(zoomX, zoomY) * 0.9; // 0.9 for padding
+            // Save current state before zooming
+            saveZoomState();
             
-            // Calculate center of box in current view
+            // Calculate the center of the box in screen coordinates
             const boxCenterX = boxX + boxWidth / 2;
             const boxCenterY = boxY + boxHeight / 2;
             
-            // Convert to canvas coordinates
-            const canvasCenterX = (boxCenterX - panX) / zoom;
-            const canvasCenterY = (boxCenterY - panY) / zoom;
+            // Get current center point in plot coordinates (before zoom change)
+            const centerPlotX = (boxCenterX - panX) / zoom;
+            const centerPlotY = (boxCenterY - panY) / zoom;
             
-            // Update zoom
-            zoom = Math.max(0.1, Math.min(10000, newZoom));
+            // Calculate new zoom to fit the box
+            const zoomFactorX = canvasWidth / boxWidth;
+            const zoomFactorY = canvasHeight / boxHeight;
+            const newZoom = Math.min(zoomFactorX, zoomFactorY) * zoom * 0.9; // 0.9 for padding
             
-            // Pan to center the box
-            panX = canvasWidth / 2 - canvasCenterX * zoom;
-            panY = canvasHeight / 2 - canvasCenterY * zoom;
+            // Clamp zoom
+            zoom = Math.max(0.1, Math.min(100000, newZoom));
+            
+            // Calculate new pan to keep the box center in the screen center
+            panX = canvasWidth / 2 - centerPlotX * zoom;
+            panY = canvasHeight / 2 - centerPlotY * zoom;
+            
+            // Clear the overlay canvas
+            const canvas2d = document.getElementById('overlayCanvas');
+            if (canvas2d) {{
+                const ctx2d = canvas2d.getContext('2d');
+                ctx2d.clearRect(0, 0, canvasWidth, canvasHeight);
+            }}
+            
+            updateDisplay();
         }}
 
         function resetZoom() {{
@@ -1497,10 +1717,38 @@ fn generate_html_viewer(
             updateDisplay();
         }}
 
+        // Configuration event handlers
+        lineWidthSlider.addEventListener('input', function(e) {{
+            lineWidthMultiplier = parseFloat(e.target.value);
+            lineWidthValue.textContent = lineWidthMultiplier.toFixed(1) + 'x';
+            updateDisplay();
+        }});
+        
+        gridOpacitySlider.addEventListener('input', function(e) {{
+            gridOpacity = parseFloat(e.target.value);
+            gridOpacityValue.textContent = Math.round(gridOpacity * 100) + '%';
+            updateDisplay();
+        }});
+        
+        showDetailsCheckbox.addEventListener('change', function(e) {{
+            showDetails = e.target.checked;
+            updateDisplay();
+        }});
+        
+        // Handle window resize
+        window.addEventListener('resize', function() {{
+            canvasWidth = window.innerWidth;
+            canvasHeight = window.innerHeight;
+            calculatePlotDimensions();
+            updateDisplay();
+        }});
+        
         // Initialize
         if (initWebGL()) {{
+            calculatePlotDimensions();
             prepareLineData();
             updateDisplay();
+            updateUndoButton();
         }} else {{
             document.body.innerHTML = '<h1>WebGL not supported</h1>';
         }}
@@ -1513,25 +1761,19 @@ fn generate_html_viewer(
         if dark { "#444444" } else { "#cccccc" },
         if dark { "#2a2a2a" } else { "#f5f5f5" },
         if dark { "#444444" } else { "#cccccc" },
-        if dark { "#2a2a2a" } else { "#f5f5f5" },
-        if dark { "#444444" } else { "#cccccc" },
+        if dark { "#2a2a2a" } else { "#f5f5f5" },  // config panel background
+        if dark { "#444444" } else { "#cccccc" },  // config panel border
         if dark { "#2a2a2a" } else { "#f0f0f0" },  // minimap background
         if dark { "#666666" } else { "#999999" },  // minimap border
         if dark { "#00ff00" } else { "#0088ff" },  // viewport border
         if dark { "rgba(0,255,0,0.2)" } else { "rgba(0,136,255,0.2)" },  // viewport fill
         if dark { "#666666" } else { "#999999" },
-        output_filename,
-        alignments_json.chars().filter(|c| *c == ',').count() + 1,
-        paf.targets.len(),
-        paf.queries.len(),
-        axes.0, axes.1,
+        if dark { "#1a1a1a" } else { "#ffffff" },  // page background again
         alignments_json,
         summary_json,
         detailed_json,
         targets_json,
         queries_json,
-        axes.0,
-        axes.1,
         if using_zoom { ranges.0.1 - ranges.0.0 } else { paf.target_length as usize },
         if using_zoom { ranges.1.1 - ranges.1.0 } else { paf.query_length as usize },
         using_zoom,
