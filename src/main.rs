@@ -591,28 +591,59 @@ fn main() {
     }
 }
 
-fn collect_alignment_data(paf: &PafFile) -> (String, String) {
+fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
     let mut alignments = Vec::new();
+    let mut detailed_alignments = Vec::new();
     let mut summary_grid = std::collections::HashMap::new();
     let grid_size = 1000; // Grid resolution for summary view
     
-    // Collect both detailed alignments and summary data
-    paf.for_each_match_in_file(|_c, x, rev, y, len| {
-        // Detailed alignment data
+    // Collect both simple alignments and detailed CIGAR data
+    for_each_line_in_file(&paf.filename, |line| {
+        let query_rev = paf_query_is_rev(line);
+        let (x, y) = paf.global_start(line, query_rev);
+        
+        // Store the full alignment for line drawing
+        let query_len = paf_query_end(line) - paf_query_begin(line);
+        let target_len = paf_target_end(line) - paf_target_begin(line);
+        let align_len = std::cmp::min(query_len, target_len);
+        
         alignments.push(format!(
             r#"{{"x":{},"y":{},"len":{},"rev":{}}}"#,
-            x, y, len, rev
+            x, y, align_len, query_rev
         ));
         
-        // Summary grid - bin alignments into grid cells
+        // Update summary grid
         let grid_x = (x as f64 / paf.target_length * grid_size as f64) as usize;
         let grid_y = (y as f64 / paf.query_length * grid_size as f64) as usize;
-        let key = (grid_x, grid_y);
-        
-        let entry = summary_grid.entry(key).or_insert((0, 0, 0)); // (count, total_length, rev_count)
+        let entry = summary_grid.entry((grid_x, grid_y)).or_insert((0, 0, 0));
         entry.0 += 1;
-        entry.1 += len;
-        if rev { entry.2 += 1; }
+        entry.1 += align_len;
+        if query_rev { entry.2 += 1; }
+        
+        // Collect detailed CIGAR operations for base-level view
+        let mut cigar_ops = Vec::new();
+        
+        paf.for_each_match(line, |c, target_pos, rev, query_pos, len| {
+            let op_type = match c {
+                'M' | '=' => "match",
+                'X' => "mismatch",
+                'I' => "insertion",
+                'D' => "deletion",
+                _ => "unknown"
+            };
+            
+            cigar_ops.push(format!(
+                r#"{{"type":"{}","x":{},"y":{},"len":{},"rev":{}}}"#,
+                op_type, target_pos, query_pos, len, rev
+            ));
+        });
+        
+        if !cigar_ops.is_empty() {
+            detailed_alignments.push(format!(
+                r#"{{"x":{},"y":{},"rev":{},"ops":[{}]}}"#,
+                x, y, query_rev, cigar_ops.join(",")
+            ));
+        }
     });
     
     // Convert summary grid to JSON
@@ -630,8 +661,9 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String) {
     
     let alignments_json = format!("[{}]", alignments.join(","));
     let summary_json = format!("[{}]", summary_data.join(","));
+    let detailed_json = format!("[{}]", detailed_alignments.join(","));
     
-    (alignments_json, summary_json)
+    (alignments_json, summary_json, detailed_json)
 }
 
 fn generate_html_viewer(
@@ -643,7 +675,7 @@ fn generate_html_viewer(
     ranges: ((usize, usize), (usize, usize)),
 ) {
     // Collect alignment data for canvas rendering
-    let (alignments_json, summary_json) = collect_alignment_data(paf);
+    let (alignments_json, summary_json, detailed_json) = collect_alignment_data(paf);
 
     // Generate sequence metadata as JSON
     let mut targets_json = String::from("[");
@@ -834,6 +866,7 @@ fn generate_html_viewer(
         // Plot data
         const alignments = {};
         const summaryData = {};
+        const detailedAlignments = {};
         const targets = {};
         const queries = {};
         const canvasWidth = {};
@@ -845,6 +878,7 @@ fn generate_html_viewer(
         const queryRange = {};
         const darkMode = {};
         const GRID_SIZE = 1000;
+        const BASE_VIEW_THRESHOLD = 100; // Show base view when < 100bp visible
 
         // Zoom and pan state
         let zoom = 1.0;
@@ -937,8 +971,7 @@ fn generate_html_viewer(
             gl.enable(gl.BLEND);
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
             
-            // Set line width
-            gl.lineWidth(1.0);
+            // Line width will be set dynamically based on zoom
             
             return true;
         }}
@@ -987,6 +1020,18 @@ fn generate_html_viewer(
             lineVertices = [];
             lineColors = [];
             
+            // Calculate visible bounds
+            const viewLeft = -panX / zoom;
+            const viewRight = (canvasWidth - panX) / zoom;
+            const viewTop = -panY / zoom;
+            const viewBottom = (canvasHeight - panY) / zoom;
+            const viewWidth = viewRight - viewLeft;
+            const viewHeight = viewBottom - viewTop;
+            
+            // Calculate pixels per base for determining detail level
+            const pixelsPerBase = canvasWidth / viewWidth;
+            const showDetails = pixelsPerBase > 2; // Show CIGAR details when zoomed in enough
+            
             // Add grid lines (sequence boundaries)
             const gridColor = hexToRgb(borderColor);
             
@@ -1016,34 +1061,78 @@ fn generate_html_viewer(
                 }}
             }});
             
-            // Add alignment lines
-            const alignColor = hexToRgb(lineColor);
+            // Draw alignments - use detailed ops if available and zoomed in
+            const matchColor = hexToRgb(lineColor);
+            const mismatchColor = hexToRgb(darkMode ? '#ff4444' : '#cc0000');
+            const indelColor = hexToRgb(darkMode ? '#4444ff' : '#0000cc');
             
-            // Calculate visible bounds for frustum culling
-            const viewLeft = -panX / zoom;
-            const viewRight = (canvasWidth - panX) / zoom;
-            const viewTop = -panY / zoom;
-            const viewBottom = (canvasHeight - panY) / zoom;
-            
-            alignments.forEach(alignment => {{
-                const startCoords = projectCoords(alignment.x, alignment.y);
-                const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
-                const endY = alignment.y + alignment.len;
-                const endCoords = projectCoords(endX, endY);
-                
-                // Simple frustum culling - check if line might be visible
-                const minX = Math.min(startCoords.x, endCoords.x);
-                const maxX = Math.max(startCoords.x, endCoords.x);
-                const minY = Math.min(startCoords.y, endCoords.y);
-                const maxY = Math.max(startCoords.y, endCoords.y);
-                
-                if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
-                    lineVertices.push(startCoords.x, startCoords.y);
-                    lineVertices.push(endCoords.x, endCoords.y);
-                    lineColors.push(alignColor.r, alignColor.g, alignColor.b, 0.8);
-                    lineColors.push(alignColor.r, alignColor.g, alignColor.b, 0.8);
-                }}
-            }});
+            if (showDetails && detailedAlignments.length > 0) {{
+                // Draw detailed CIGAR operations
+                detailedAlignments.forEach(alignment => {{
+                    alignment.ops.forEach(op => {{
+                        const startCoords = projectCoords(op.x, op.y);
+                        
+                        if (op.type === 'match' || op.type === 'unknown') {{
+                            const endX = op.x + op.len;
+                            const endY = op.y + (op.rev ? -op.len : op.len);
+                            const endCoords = projectCoords(endX, endY);
+                            
+                            lineVertices.push(startCoords.x, startCoords.y);
+                            lineVertices.push(endCoords.x, endCoords.y);
+                            lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
+                            lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
+                        }} else if (op.type === 'mismatch') {{
+                            // Draw mismatches as individual segments
+                            for (let i = 0; i < Math.min(op.len, 100); i++) {{ // Limit to prevent too many segments
+                                const mx = op.x + i;
+                                const my = op.y + (op.rev ? -i : i);
+                                const mStartCoords = projectCoords(mx, my);
+                                const mEndCoords = projectCoords(mx + 1, my + (op.rev ? -1 : 1));
+                                
+                                lineVertices.push(mStartCoords.x, mStartCoords.y);
+                                lineVertices.push(mEndCoords.x, mEndCoords.y);
+                                lineColors.push(mismatchColor.r, mismatchColor.g, mismatchColor.b, 1.0);
+                                lineColors.push(mismatchColor.r, mismatchColor.g, mismatchColor.b, 1.0);
+                            }}
+                        }} else if (op.type === 'insertion') {{
+                            const endCoords = projectCoords(op.x, op.y + (op.rev ? -op.len : op.len));
+                            
+                            lineVertices.push(startCoords.x, startCoords.y);
+                            lineVertices.push(endCoords.x, endCoords.y);
+                            lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                            lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                        }} else if (op.type === 'deletion') {{
+                            const endCoords = projectCoords(op.x + op.len, op.y);
+                            
+                            lineVertices.push(startCoords.x, startCoords.y);
+                            lineVertices.push(endCoords.x, endCoords.y);
+                            lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                            lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                        }}
+                    }});
+                }});
+            }} else {{
+                // Draw simple alignment lines
+                alignments.forEach(alignment => {{
+                    const startCoords = projectCoords(alignment.x, alignment.y);
+                    const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
+                    const endY = alignment.y + alignment.len;
+                    const endCoords = projectCoords(endX, endY);
+                    
+                    // Simple frustum culling
+                    const minX = Math.min(startCoords.x, endCoords.x);
+                    const maxX = Math.max(startCoords.x, endCoords.x);
+                    const minY = Math.min(startCoords.y, endCoords.y);
+                    const maxY = Math.max(startCoords.y, endCoords.y);
+                    
+                    if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
+                        lineVertices.push(startCoords.x, startCoords.y);
+                        lineVertices.push(endCoords.x, endCoords.y);
+                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
+                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
+                    }}
+                }});
+            }}
         }}
         
         function drawPlot() {{
@@ -1057,6 +1146,12 @@ fn generate_html_viewer(
             gl.clear(gl.COLOR_BUFFER_BIT);
             
             if (lineVertices.length === 0) return;
+            
+            // Calculate dynamic line width based on zoom
+            const baseLineWidth = 1.0;
+            const zoomFactor = Math.max(1, Math.log2(zoom + 1));
+            const lineWidth = Math.min(10, baseLineWidth * zoomFactor);
+            gl.lineWidth(lineWidth);
             
             // Use shader program
             gl.useProgram(shaderProgram);
@@ -1228,6 +1323,8 @@ fn generate_html_viewer(
             drawPlot();
             updateLabels();
             drawMinimap();
+            
+            // Update zoom info
             zoomLevel.textContent = zoom.toFixed(2) + 'x';
             panInfo.textContent = `${{Math.round(panX)}}, ${{Math.round(panY)}}`;
         }}
@@ -1430,6 +1527,7 @@ fn generate_html_viewer(
         axes.0, axes.1,
         alignments_json,
         summary_json,
+        detailed_json,
         targets_json,
         queries_json,
         axes.0,
