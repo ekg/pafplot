@@ -14,6 +14,9 @@ use itertools::Itertools;
 extern crate clap;
 use clap::{App, Arg}; //, SubCommand};
 
+extern crate base64;
+use base64::Engine;
+
 fn for_each_line_in_file(paf_filename: &str, mut callback: impl FnMut(&str)) {
     let file = File::open(paf_filename).unwrap();
     let reader = BufReader::new(file);
@@ -120,7 +123,7 @@ impl PafFile {
             let query_id = query_mphf.hash(&query_name) as usize;
             if !seen_queries[query_id] {
                 seen_queries[query_id] = true;
-                let mut query = &mut queries[query_id];
+                let query = &mut queries[query_id];
                 query.name = query_name;
                 query.length = paf_query_length(l);
             }
@@ -128,7 +131,7 @@ impl PafFile {
             let target_id = target_mphf.hash(&target_name) as usize;
             if !seen_targets[target_id] {
                 seen_targets[target_id] = true;
-                let mut target = &mut targets[target_id];
+                let target = &mut targets[target_id];
                 target.name = target_name;
                 target.length = paf_target_length(l);
             }
@@ -139,7 +142,7 @@ impl PafFile {
         let mut target_offset: usize = 0;
         targets_sort.iter().for_each(|t| {
             let target_id = target_mphf.hash(&t.name) as usize;
-            let mut target = &mut targets[target_id];
+            let target = &mut targets[target_id];
             target.rank = target_idx;
             target_idx += 1;
             target.offset = target_offset;
@@ -151,7 +154,7 @@ impl PafFile {
         let mut query_offset: usize = 0;
         queries_sort.iter().for_each(|q| {
             let query_id = query_mphf.hash(&q.name) as usize;
-            let mut query = &mut queries[query_id];
+            let query = &mut queries[query_id];
             query.rank = query_idx;
             query_idx += 1;
             query.offset = query_offset;
@@ -191,12 +194,14 @@ impl PafFile {
     fn global_query_start(self: &PafFile, idx: usize) -> usize {
         self.queries[idx].offset
     }
+    #[allow(dead_code)]
     fn query_length(self: &PafFile, idx: usize) -> usize {
         self.queries[idx].length
     }
     fn global_target_start(self: &PafFile, idx: usize) -> usize {
         self.targets[idx].offset
     }
+    #[allow(dead_code)]
     fn target_length(self: &PafFile, idx: usize) -> usize {
         self.targets[idx].length
     }
@@ -382,6 +387,13 @@ fn main() {
                 .short("r")
                 .long("range")
                 .help("Plot the given 2D range in target and query rather than the full matrix seqA:10-200,seqB:300-400"),
+        )
+        .arg(
+            Arg::with_name("html")
+                .takes_value(false)
+                .short("h")
+                .long("html")
+                .help("Generate an interactive HTML viewer with sequence labels and coordinates"),
         )
         .get_matches();
 
@@ -573,4 +585,344 @@ fn main() {
     if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8) {
         panic!("failed to write png: {:?}", e);
     }
+
+    // Generate HTML viewer if requested
+    if matches.is_present("html") {
+        generate_html_viewer(&paf, &raw, axes, output_png, dark, using_zoom, (target_range, query_range));
+    }
+}
+
+fn generate_html_viewer(
+    paf: &PafFile,
+    raw_image: &[u8],
+    axes: (usize, usize),
+    png_filename: &str,
+    dark: bool,
+    using_zoom: bool,
+    ranges: ((usize, usize), (usize, usize)),
+) {
+    // Encode PNG data to base64
+    let png_data = lodepng::encode_memory(&raw_image, axes.0, axes.1, lodepng::ColorType::RGB, 8)
+        .expect("Failed to encode PNG data");
+    let base64_png = base64::engine::general_purpose::STANDARD.encode(&png_data);
+
+    // Generate sequence metadata as JSON
+    let mut targets_json = String::from("[");
+    for (i, target) in paf.targets.iter().enumerate() {
+        if i > 0 { targets_json.push(','); }
+        targets_json.push_str(&format!(
+            r#"{{"name":"{}","length":{},"rank":{},"offset":{}}}"#,
+            target.name.replace('"', r#"\""#), target.length, target.rank, target.offset
+        ));
+    }
+    targets_json.push(']');
+
+    let mut queries_json = String::from("[");
+    for (i, query) in paf.queries.iter().enumerate() {
+        if i > 0 { queries_json.push(','); }
+        queries_json.push_str(&format!(
+            r#"{{"name":"{}","length":{},"rank":{},"offset":{}}}"#,
+            query.name.replace('"', r#"\""#), query.length, query.rank, query.offset
+        ));
+    }
+    queries_json.push(']');
+
+    let html_content = format!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PAF Plot Viewer - {}</title>
+    <style>
+        body {{
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            background-color: {};
+            color: {};
+            margin: 0;
+            padding: 20px;
+        }}
+        .container {{
+            max-width: 100vw;
+            overflow: auto;
+        }}
+        .plot-area {{
+            position: relative;
+            display: inline-block;
+            margin: 50px;
+        }}
+        .plot-image {{
+            display: block;
+            border: 1px solid {};
+        }}
+        .overlay {{
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }}
+        .crosshair {{
+            position: absolute;
+            pointer-events: none;
+            z-index: 5;
+        }}
+        .crosshair-h {{
+            width: 100%;
+            height: 1px;
+            background-color: {};
+            opacity: 0.7;
+        }}
+        .crosshair-v {{
+            width: 1px;
+            height: 100%;
+            background-color: {};
+            opacity: 0.7;
+        }}
+        .info-panel {{
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: {};
+            border: 1px solid {};
+            padding: 15px;
+            border-radius: 5px;
+            min-width: 300px;
+            font-size: 12px;
+            z-index: 20;
+        }}
+        .target-labels, .query-labels {{
+            position: absolute;
+            font-size: 10px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        }}
+        .target-labels {{
+            bottom: -40px;
+            left: 0;
+            width: 100%;
+            height: 30px;
+        }}
+        .query-labels {{
+            right: -150px;
+            top: 0;
+            width: 140px;
+            height: 100%;
+        }}
+        .label {{
+            position: absolute;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        .target-label {{
+            writing-mode: vertical-lr;
+            text-orientation: mixed;
+            transform-origin: bottom left;
+            transform: rotate(45deg);
+            bottom: 0;
+        }}
+        .query-label {{
+            text-align: right;
+            right: 5px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PAF Plot Viewer</h1>
+        <p>File: {} | Size: {}x{} pixels | Target sequences: {} | Query sequences: {}</p>
+        
+        <div class="plot-area" id="plotArea">
+            <img src="data:image/png;base64,{}" alt="PAF Plot" class="plot-image" id="plotImage">
+            <div class="overlay" id="overlay"></div>
+            <div class="crosshair crosshair-h" id="crosshairH" style="display: none;"></div>
+            <div class="crosshair crosshair-v" id="crosshairV" style="display: none;"></div>
+            
+            <div class="target-labels" id="targetLabels"></div>
+            <div class="query-labels" id="queryLabels"></div>
+        </div>
+        
+        <div class="info-panel">
+            <h3>Coordinates</h3>
+            <div id="coordinates">Move mouse over plot to see coordinates</div>
+            <h3>Current Position</h3>
+            <div id="position">Target: -, Query: -</div>
+            <h3>Sequence Info</h3>
+            <div id="sequenceInfo">Hover over plot for details</div>
+        </div>
+    </div>
+
+    <script>
+        const plotImage = document.getElementById('plotImage');
+        const overlay = document.getElementById('overlay');
+        const crosshairH = document.getElementById('crosshairH');
+        const crosshairV = document.getElementById('crosshairV');
+        const coordinates = document.getElementById('coordinates');
+        const position = document.getElementById('position');
+        const sequenceInfo = document.getElementById('sequenceInfo');
+        const targetLabels = document.getElementById('targetLabels');
+        const queryLabels = document.getElementById('queryLabels');
+
+        // Plot metadata
+        const targets = {};
+        const queries = {};
+        const plotWidth = {};
+        const plotHeight = {};
+        const targetLength = {};
+        const queryLength = {};
+        const usingZoom = {};
+        const targetRange = {};
+        const queryRange = {};
+
+        // Initialize sequence labels
+        function initializeLabels() {{
+            // Target labels (bottom, rotated)
+            targets.forEach(target => {{
+                const label = document.createElement('div');
+                label.className = 'label target-label';
+                label.textContent = target.name;
+                label.title = `${{target.name}} (${{target.length}} bp)`;
+                
+                const x = (target.offset / targetLength) * plotWidth;
+                label.style.left = x + 'px';
+                label.style.bottom = '0px';
+                targetLabels.appendChild(label);
+            }});
+
+            // Query labels (right side)
+            queries.forEach(query => {{
+                const label = document.createElement('div');
+                label.className = 'label query-label';
+                label.textContent = query.name;
+                label.title = `${{query.name}} (${{query.length}} bp)`;
+                
+                const y = ((queryLength - query.offset - query.length) / queryLength) * plotHeight;
+                label.style.top = y + 'px';
+                label.style.lineHeight = (query.length / queryLength * plotHeight) + 'px';
+                queryLabels.appendChild(label);
+            }});
+        }}
+
+        // Convert pixel coordinates to genomic coordinates
+        function pixelToGenomicCoords(pixelX, pixelY) {{
+            let targetCoord, queryCoord;
+            
+            if (usingZoom) {{
+                targetCoord = targetRange[0] + (pixelX / plotWidth) * (targetRange[1] - targetRange[0]);
+                queryCoord = queryRange[0] + ((plotHeight - pixelY) / plotHeight) * (queryRange[1] - queryRange[0]);
+            }} else {{
+                targetCoord = (pixelX / plotWidth) * targetLength;
+                queryCoord = ((plotHeight - pixelY) / plotHeight) * queryLength;
+            }}
+            
+            return {{
+                target: Math.round(targetCoord),
+                query: Math.round(queryCoord)
+            }};
+        }}
+
+        // Find which sequence contains a given coordinate
+        function findSequenceAtCoord(coord, sequences, totalLength) {{
+            for (const seq of sequences) {{
+                if (coord >= seq.offset && coord < seq.offset + seq.length) {{
+                    return {{
+                        sequence: seq,
+                        relativePos: coord - seq.offset
+                    }};
+                }}
+            }}
+            return null;
+        }}
+
+        // Mouse move handler
+        overlay.addEventListener('mousemove', function(e) {{
+            const rect = plotImage.getBoundingClientRect();
+            const pixelX = e.clientX - rect.left;
+            const pixelY = e.clientY - rect.top;
+            
+            // Update crosshairs
+            crosshairH.style.top = pixelY + 'px';
+            crosshairH.style.display = 'block';
+            crosshairV.style.left = pixelX + 'px';
+            crosshairV.style.display = 'block';
+            
+            // Convert to genomic coordinates
+            const genomicCoords = pixelToGenomicCoords(pixelX, pixelY);
+            
+            // Update coordinate display
+            coordinates.innerHTML = `
+                Pixel: (${{Math.round(pixelX)}}, ${{Math.round(pixelY)}})<br>
+                Genomic: (${{genomicCoords.target.toLocaleString()}}, ${{genomicCoords.query.toLocaleString()}})
+            `;
+            
+            // Find target and query sequences
+            const targetSeq = findSequenceAtCoord(genomicCoords.target, targets, targetLength);
+            const querySeq = findSequenceAtCoord(genomicCoords.query, queries, queryLength);
+            
+            // Update position display
+            const targetText = targetSeq ? 
+                `${{targetSeq.sequence.name}}:${{targetSeq.relativePos.toLocaleString()}}` : 
+                `${{genomicCoords.target.toLocaleString()}}`;
+            const queryText = querySeq ? 
+                `${{querySeq.sequence.name}}:${{querySeq.relativePos.toLocaleString()}}` : 
+                `${{genomicCoords.query.toLocaleString()}}`;
+                
+            position.innerHTML = `Target: ${{targetText}}<br>Query: ${{queryText}}`;
+            
+            // Update sequence info
+            let info = '';
+            if (targetSeq) {{
+                info += `<strong>Target:</strong> ${{targetSeq.sequence.name}}<br>`;
+                info += `Length: ${{targetSeq.sequence.length.toLocaleString()}} bp<br>`;
+                info += `Position: ${{targetSeq.relativePos.toLocaleString()}} / ${{targetSeq.sequence.length.toLocaleString()}}<br><br>`;
+            }}
+            if (querySeq) {{
+                info += `<strong>Query:</strong> ${{querySeq.sequence.name}}<br>`;
+                info += `Length: ${{querySeq.sequence.length.toLocaleString()}} bp<br>`;
+                info += `Position: ${{querySeq.relativePos.toLocaleString()}} / ${{querySeq.sequence.length.toLocaleString()}}`;
+            }}
+            sequenceInfo.innerHTML = info || 'No sequence information available';
+        }});
+
+        // Hide crosshairs when mouse leaves
+        overlay.addEventListener('mouseleave', function() {{
+            crosshairH.style.display = 'none';
+            crosshairV.style.display = 'none';
+        }});
+
+        // Initialize labels when image loads
+        plotImage.addEventListener('load', initializeLabels);
+    </script>
+</body>
+</html>"#,
+        png_filename,
+        if dark { "#1a1a1a" } else { "#ffffff" },
+        if dark { "#ffffff" } else { "#000000" },
+        if dark { "#444444" } else { "#cccccc" },
+        if dark { "#ff6b6b" } else { "#ff0000" },
+        if dark { "#ff6b6b" } else { "#ff0000" },
+        if dark { "#2a2a2a" } else { "#f5f5f5" },
+        if dark { "#444444" } else { "#cccccc" },
+        png_filename,
+        axes.0, axes.1,
+        paf.targets.len(),
+        paf.queries.len(),
+        base64_png,
+        targets_json,
+        queries_json,
+        axes.0,
+        axes.1,
+        if using_zoom { ranges.0.1 - ranges.0.0 } else { paf.target_length as usize },
+        if using_zoom { ranges.1.1 - ranges.1.0 } else { paf.query_length as usize },
+        using_zoom,
+        format!("[{}, {}]", ranges.0.0, ranges.0.1),
+        format!("[{}, {}]", ranges.1.0, ranges.1.1),
+    );
+
+    let html_filename = png_filename.replace(".png", ".html");
+    std::fs::write(&html_filename, html_content)
+        .expect("Failed to write HTML file");
+    
+    println!("Generated interactive HTML viewer: {}", html_filename);
 }
