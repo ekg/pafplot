@@ -15,7 +15,6 @@ extern crate clap;
 use clap::{App, Arg}; //, SubCommand};
 
 extern crate base64;
-use base64::Engine;
 
 fn for_each_line_in_file(paf_filename: &str, mut callback: impl FnMut(&str)) {
     let file = File::open(paf_filename).unwrap();
@@ -592,19 +591,30 @@ fn main() {
     }
 }
 
+fn collect_alignment_data(paf: &PafFile) -> String {
+    let mut alignments = Vec::new();
+    
+    paf.for_each_match_in_file(|_c, x, rev, y, len| {
+        alignments.push(format!(
+            r#"{{"x":{},"y":{},"len":{},"rev":{}}}"#,
+            x, y, len, rev
+        ));
+    });
+    
+    format!("[{}]", alignments.join(","))
+}
+
 fn generate_html_viewer(
     paf: &PafFile,
-    raw_image: &[u8],
+    _raw_image: &[u8],
     axes: (usize, usize),
     png_filename: &str,
     dark: bool,
     using_zoom: bool,
     ranges: ((usize, usize), (usize, usize)),
 ) {
-    // Encode PNG data to base64
-    let png_data = lodepng::encode_memory(&raw_image, axes.0, axes.1, lodepng::ColorType::RGB, 8)
-        .expect("Failed to encode PNG data");
-    let base64_png = base64::engine::general_purpose::STANDARD.encode(&png_data);
+    // Collect alignment data for canvas rendering
+    let alignments_json = collect_alignment_data(paf);
 
     // Generate sequence metadata as JSON
     let mut targets_json = String::from("[");
@@ -650,35 +660,55 @@ fn generate_html_viewer(
             display: inline-block;
             margin: 50px;
         }}
-        .plot-image {{
+        #plotCanvas {{
             display: block;
             border: 1px solid {};
+            cursor: crosshair;
         }}
-        .overlay {{
+        .tooltip {{
             position: absolute;
-            top: 0;
+            background-color: {};
+            border: 1px solid {};
+            padding: 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            pointer-events: none;
+            z-index: 1000;
+            white-space: nowrap;
+            display: none;
+        }}
+        .labels {{
+            position: absolute;
+            font-size: 9px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            pointer-events: none;
+        }}
+        .target-labels {{
+            bottom: -30px;
             left: 0;
             width: 100%;
-            height: 100%;
-            pointer-events: none;
-            z-index: 10;
+            height: 25px;
         }}
-        .crosshair {{
+        .query-labels {{
+            right: -120px;
+            top: 0;
+            width: 115px;
+            height: 100%;
+        }}
+        .label {{
             position: absolute;
-            pointer-events: none;
-            z-index: 5;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }}
-        .crosshair-h {{
-            width: 100%;
-            height: 1px;
-            background-color: {};
-            opacity: 0.7;
+        .target-label {{
+            transform-origin: left bottom;
+            transform: rotate(-45deg);
+            bottom: 0;
         }}
-        .crosshair-v {{
-            width: 1px;
-            height: 100%;
-            background-color: {};
-            opacity: 0.7;
+        .query-label {{
+            text-align: right;
+            right: 5px;
         }}
         .info-panel {{
             position: fixed;
@@ -692,137 +722,151 @@ fn generate_html_viewer(
             font-size: 12px;
             z-index: 20;
         }}
-        .target-labels, .query-labels {{
-            position: absolute;
-            font-size: 10px;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+        .controls {{
+            margin-bottom: 20px;
         }}
-        .target-labels {{
-            bottom: -40px;
-            left: 0;
-            width: 100%;
-            height: 30px;
-        }}
-        .query-labels {{
-            right: -150px;
-            top: 0;
-            width: 140px;
-            height: 100%;
-        }}
-        .label {{
-            position: absolute;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }}
-        .target-label {{
-            writing-mode: vertical-lr;
-            text-orientation: mixed;
-            transform-origin: bottom left;
-            transform: rotate(45deg);
-            bottom: 0;
-        }}
-        .query-label {{
-            text-align: right;
-            right: 5px;
+        .zoom-info {{
+            font-size: 11px;
+            color: {};
+            margin-top: 10px;
         }}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>PAF Plot Viewer</h1>
-        <p>File: {} | Size: {}x{} pixels | Target sequences: {} | Query sequences: {}</p>
+        <p>File: {} | Alignments: {} | Target sequences: {} | Query sequences: {}</p>
+        
+        <div class="controls">
+            <button onclick="resetZoom()">Reset Zoom</button>
+            <span class="zoom-info">Scroll wheel to zoom, drag to pan</span>
+        </div>
         
         <div class="plot-area" id="plotArea">
-            <img src="data:image/png;base64,{}" alt="PAF Plot" class="plot-image" id="plotImage">
-            <div class="overlay" id="overlay"></div>
-            <div class="crosshair crosshair-h" id="crosshairH" style="display: none;"></div>
-            <div class="crosshair crosshair-v" id="crosshairV" style="display: none;"></div>
+            <canvas id="plotCanvas" width="{}" height="{}"></canvas>
+            <div class="tooltip" id="tooltip"></div>
             
-            <div class="target-labels" id="targetLabels"></div>
-            <div class="query-labels" id="queryLabels"></div>
+            <div class="labels target-labels" id="targetLabels"></div>
+            <div class="labels query-labels" id="queryLabels"></div>
         </div>
         
         <div class="info-panel">
-            <h3>Coordinates</h3>
-            <div id="coordinates">Move mouse over plot to see coordinates</div>
             <h3>Current Position</h3>
-            <div id="position">Target: -, Query: -</div>
+            <div id="position">Move mouse over plot</div>
             <h3>Sequence Info</h3>
             <div id="sequenceInfo">Hover over plot for details</div>
+            <div class="zoom-info">
+                Zoom: <span id="zoomLevel">1.0x</span><br>
+                Pan: <span id="panInfo">0, 0</span>
+            </div>
         </div>
     </div>
 
     <script>
-        const plotImage = document.getElementById('plotImage');
-        const overlay = document.getElementById('overlay');
-        const crosshairH = document.getElementById('crosshairH');
-        const crosshairV = document.getElementById('crosshairV');
-        const coordinates = document.getElementById('coordinates');
+        const canvas = document.getElementById('plotCanvas');
+        const ctx = canvas.getContext('2d');
+        const tooltip = document.getElementById('tooltip');
         const position = document.getElementById('position');
         const sequenceInfo = document.getElementById('sequenceInfo');
+        const zoomLevel = document.getElementById('zoomLevel');
+        const panInfo = document.getElementById('panInfo');
         const targetLabels = document.getElementById('targetLabels');
         const queryLabels = document.getElementById('queryLabels');
 
-        // Plot metadata
+        // Plot data
+        const alignments = {};
         const targets = {};
         const queries = {};
-        const plotWidth = {};
-        const plotHeight = {};
+        const canvasWidth = {};
+        const canvasHeight = {};
         const targetLength = {};
         const queryLength = {};
         const usingZoom = {};
         const targetRange = {};
         const queryRange = {};
+        const darkMode = {};
 
-        // Initialize sequence labels
-        function initializeLabels() {{
-            // Target labels (bottom, rotated)
+        // Zoom and pan state
+        let zoom = 1.0;
+        let panX = 0;
+        let panY = 0;
+        let isDragging = false;
+        let dragStartX = 0;
+        let dragStartY = 0;
+        let dragStartPanX = 0;
+        let dragStartPanY = 0;
+
+        // Colors
+        const backgroundColor = darkMode ? '#1a1a1a' : '#ffffff';
+        const lineColor = darkMode ? '#ffffff' : '#000000';
+        const borderColor = darkMode ? '#444444' : '#cccccc';
+
+        function drawPlot() {{
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            
+            // Set background
+            ctx.fillStyle = backgroundColor;
+            ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+            
+            // Draw sequence boundaries
+            ctx.strokeStyle = borderColor;
+            ctx.lineWidth = 0.5;
+            
+            // Target boundaries (vertical lines)
             targets.forEach(target => {{
-                const label = document.createElement('div');
-                label.className = 'label target-label';
-                label.textContent = target.name;
-                label.title = `${{target.name}} (${{target.length}} bp)`;
-                
-                const x = (target.offset / targetLength) * plotWidth;
-                label.style.left = x + 'px';
-                label.style.bottom = '0px';
-                targetLabels.appendChild(label);
+                const x = ((target.offset / targetLength) * canvasWidth) * zoom + panX;
+                if (x >= 0 && x <= canvasWidth) {{
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, canvasHeight);
+                    ctx.stroke();
+                }}
             }});
-
-            // Query labels (right side)
+            
+            // Query boundaries (horizontal lines)
             queries.forEach(query => {{
-                const label = document.createElement('div');
-                label.className = 'label query-label';
-                label.textContent = query.name;
-                label.title = `${{query.name}} (${{query.length}} bp)`;
-                
-                const y = ((queryLength - query.offset - query.length) / queryLength) * plotHeight;
-                label.style.top = y + 'px';
-                label.style.lineHeight = (query.length / queryLength * plotHeight) + 'px';
-                queryLabels.appendChild(label);
+                const y = (((queryLength - query.offset - query.length) / queryLength) * canvasHeight) * zoom + panY;
+                if (y >= 0 && y <= canvasHeight) {{
+                    ctx.beginPath();
+                    ctx.moveTo(0, y);
+                    ctx.lineTo(canvasWidth, y);
+                    ctx.stroke();
+                }}
             }});
+            
+            // Draw alignments
+            ctx.strokeStyle = lineColor;
+            ctx.lineWidth = 1.0;
+            ctx.globalAlpha = 0.7;
+            
+            alignments.forEach(alignment => {{
+                const startX = ((alignment.x / targetLength) * canvasWidth) * zoom + panX;
+                const startY = (((queryLength - alignment.y) / queryLength) * canvasHeight) * zoom + panY;
+                const endX = (((alignment.x + (alignment.rev ? -alignment.len : alignment.len)) / targetLength) * canvasWidth) * zoom + panX;
+                const endY = (((queryLength - alignment.y - alignment.len) / queryLength) * canvasHeight) * zoom + panY;
+                
+                // Only draw if visible
+                if ((startX >= -10 && startX <= canvasWidth + 10) || (endX >= -10 && endX <= canvasWidth + 10)) {{
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(endX, endY);
+                    ctx.stroke();
+                }}
+            }});
+            
+            ctx.globalAlpha = 1.0;
         }}
 
-        // Convert pixel coordinates to genomic coordinates
         function pixelToGenomicCoords(pixelX, pixelY) {{
-            let targetCoord, queryCoord;
-            
-            if (usingZoom) {{
-                targetCoord = targetRange[0] + (pixelX / plotWidth) * (targetRange[1] - targetRange[0]);
-                queryCoord = queryRange[0] + ((plotHeight - pixelY) / plotHeight) * (queryRange[1] - queryRange[0]);
-            }} else {{
-                targetCoord = (pixelX / plotWidth) * targetLength;
-                queryCoord = ((plotHeight - pixelY) / plotHeight) * queryLength;
-            }}
+            const genomicX = ((pixelX - panX) / zoom) * (targetLength / canvasWidth);
+            const genomicY = queryLength - ((pixelY - panY) / zoom) * (queryLength / canvasHeight);
             
             return {{
-                target: Math.round(targetCoord),
-                query: Math.round(queryCoord)
+                target: Math.max(0, Math.min(targetLength, Math.round(genomicX))),
+                query: Math.max(0, Math.min(queryLength, Math.round(genomicY)))
             }};
         }}
 
-        // Find which sequence contains a given coordinate
         function findSequenceAtCoord(coord, sequences, totalLength) {{
             for (const seq of sequences) {{
                 if (coord >= seq.offset && coord < seq.offset + seq.length) {{
@@ -835,39 +879,70 @@ fn generate_html_viewer(
             return null;
         }}
 
-        // Mouse move handler
-        overlay.addEventListener('mousemove', function(e) {{
-            const rect = plotImage.getBoundingClientRect();
+        function updateLabels() {{
+            // Clear existing labels
+            targetLabels.innerHTML = '';
+            queryLabels.innerHTML = '';
+            
+            // Target labels
+            targets.forEach(target => {{
+                const x = ((target.offset / targetLength) * canvasWidth) * zoom + panX;
+                if (x >= -50 && x <= canvasWidth + 50) {{
+                    const label = document.createElement('div');
+                    label.className = 'label target-label';
+                    label.textContent = target.name;
+                    label.title = `${{target.name}} (${{target.length.toLocaleString()}} bp)`;
+                    label.style.left = (x + 5) + 'px';
+                    targetLabels.appendChild(label);
+                }}
+            }});
+            
+            // Query labels
+            queries.forEach(query => {{
+                const y = (((queryLength - query.offset - query.length) / queryLength) * canvasHeight) * zoom + panY;
+                if (y >= -20 && y <= canvasHeight + 20) {{
+                    const label = document.createElement('div');
+                    label.className = 'label query-label';
+                    label.textContent = query.name;
+                    label.title = `${{query.name}} (${{query.length.toLocaleString()}} bp)`;
+                    label.style.top = y + 'px';
+                    queryLabels.appendChild(label);
+                }}
+            }});
+        }}
+
+        function updateDisplay() {{
+            drawPlot();
+            updateLabels();
+            zoomLevel.textContent = zoom.toFixed(2) + 'x';
+            panInfo.textContent = `${{Math.round(panX)}}, ${{Math.round(panY)}}`;
+        }}
+
+        // Mouse event handlers
+        canvas.addEventListener('mousemove', function(e) {{
+            const rect = canvas.getBoundingClientRect();
             const pixelX = e.clientX - rect.left;
             const pixelY = e.clientY - rect.top;
             
-            // Update crosshairs
-            crosshairH.style.top = pixelY + 'px';
-            crosshairH.style.display = 'block';
-            crosshairV.style.left = pixelX + 'px';
-            crosshairV.style.display = 'block';
+            if (isDragging) {{
+                panX = dragStartPanX + (pixelX - dragStartX);
+                panY = dragStartPanY + (pixelY - dragStartY);
+                updateDisplay();
+                return;
+            }}
             
-            // Convert to genomic coordinates
+            // Update tooltip and info
             const genomicCoords = pixelToGenomicCoords(pixelX, pixelY);
-            
-            // Update coordinate display
-            coordinates.innerHTML = `
-                Pixel: (${{Math.round(pixelX)}}, ${{Math.round(pixelY)}})<br>
-                Genomic: (${{genomicCoords.target.toLocaleString()}}, ${{genomicCoords.query.toLocaleString()}})
-            `;
-            
-            // Find target and query sequences
             const targetSeq = findSequenceAtCoord(genomicCoords.target, targets, targetLength);
             const querySeq = findSequenceAtCoord(genomicCoords.query, queries, queryLength);
             
-            // Update position display
             const targetText = targetSeq ? 
                 `${{targetSeq.sequence.name}}:${{targetSeq.relativePos.toLocaleString()}}` : 
                 `${{genomicCoords.target.toLocaleString()}}`;
             const queryText = querySeq ? 
                 `${{querySeq.sequence.name}}:${{querySeq.relativePos.toLocaleString()}}` : 
                 `${{genomicCoords.query.toLocaleString()}}`;
-                
+            
             position.innerHTML = `Target: ${{targetText}}<br>Query: ${{queryText}}`;
             
             // Update sequence info
@@ -883,16 +958,63 @@ fn generate_html_viewer(
                 info += `Position: ${{querySeq.relativePos.toLocaleString()}} / ${{querySeq.sequence.length.toLocaleString()}}`;
             }}
             sequenceInfo.innerHTML = info || 'No sequence information available';
+            
+            // Show tooltip
+            tooltip.style.display = 'block';
+            tooltip.style.left = (rect.left + pixelX + 10) + 'px';
+            tooltip.style.top = (rect.top + pixelY - 30) + 'px';
+            tooltip.innerHTML = `${{targetText}}<br>${{queryText}}`;
         }});
 
-        // Hide crosshairs when mouse leaves
-        overlay.addEventListener('mouseleave', function() {{
-            crosshairH.style.display = 'none';
-            crosshairV.style.display = 'none';
+        canvas.addEventListener('mouseleave', function() {{
+            tooltip.style.display = 'none';
         }});
 
-        // Initialize labels when image loads
-        plotImage.addEventListener('load', initializeLabels);
+        canvas.addEventListener('mousedown', function(e) {{
+            isDragging = true;
+            dragStartX = e.clientX - canvas.getBoundingClientRect().left;
+            dragStartY = e.clientY - canvas.getBoundingClientRect().top;
+            dragStartPanX = panX;
+            dragStartPanY = panY;
+            canvas.style.cursor = 'grabbing';
+        }});
+
+        canvas.addEventListener('mouseup', function() {{
+            isDragging = false;
+            canvas.style.cursor = 'crosshair';
+        }});
+
+        canvas.addEventListener('wheel', function(e) {{
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+            const newZoom = Math.max(0.1, Math.min(10, zoom * zoomFactor));
+            
+            if (newZoom !== zoom) {{
+                // Zoom towards mouse position
+                const genomicBefore = pixelToGenomicCoords(mouseX, mouseY);
+                zoom = newZoom;
+                const genomicAfter = pixelToGenomicCoords(mouseX, mouseY);
+                
+                panX += (genomicAfter.target - genomicBefore.target) * (canvasWidth / targetLength) * zoom;
+                panY += (genomicAfter.query - genomicBefore.query) * (canvasHeight / queryLength) * zoom;
+                
+                updateDisplay();
+            }}
+        }});
+
+        function resetZoom() {{
+            zoom = 1.0;
+            panX = 0;
+            panY = 0;
+            updateDisplay();
+        }}
+
+        // Initialize
+        updateDisplay();
     </script>
 </body>
 </html>"#,
@@ -900,15 +1022,17 @@ fn generate_html_viewer(
         if dark { "#1a1a1a" } else { "#ffffff" },
         if dark { "#ffffff" } else { "#000000" },
         if dark { "#444444" } else { "#cccccc" },
-        if dark { "#ff6b6b" } else { "#ff0000" },
-        if dark { "#ff6b6b" } else { "#ff0000" },
         if dark { "#2a2a2a" } else { "#f5f5f5" },
         if dark { "#444444" } else { "#cccccc" },
+        if dark { "#2a2a2a" } else { "#f5f5f5" },
+        if dark { "#444444" } else { "#cccccc" },
+        if dark { "#666666" } else { "#999999" },
         png_filename,
-        axes.0, axes.1,
+        alignments_json.chars().filter(|c| *c == ',').count() + 1,
         paf.targets.len(),
         paf.queries.len(),
-        base64_png,
+        axes.0, axes.1,
+        alignments_json,
         targets_json,
         queries_json,
         axes.0,
@@ -918,6 +1042,7 @@ fn generate_html_viewer(
         using_zoom,
         format!("[{}, {}]", ranges.0.0, ranges.0.1),
         format!("[{}, {}]", ranges.1.0, ranges.1.1),
+        dark,
     );
 
     let html_filename = png_filename.replace(".png", ".html");
