@@ -819,7 +819,7 @@ fn generate_html_viewer(
 
     <script>
         const canvas = document.getElementById('plotCanvas');
-        const ctx = canvas.getContext('2d');
+        const gl = canvas.getContext('webgl');
         const tooltip = document.getElementById('tooltip');
         const position = document.getElementById('position');
         const sequenceInfo = document.getElementById('sequenceInfo');
@@ -867,6 +867,104 @@ fn generate_html_viewer(
         const backgroundColor = darkMode ? '#1a1a1a' : '#ffffff';
         const lineColor = darkMode ? '#ffffff' : '#000000';
         const borderColor = darkMode ? '#444444' : '#cccccc';
+        
+        // WebGL setup
+        let shaderProgram;
+        let positionBuffer;
+        let colorBuffer;
+        let lineVertices = [];
+        let lineColors = [];
+        
+        // Vertex shader source
+        const vsSource = `
+            attribute vec2 a_position;
+            attribute vec4 a_color;
+            uniform vec2 u_resolution;
+            uniform vec2 u_pan;
+            uniform float u_zoom;
+            varying vec4 v_color;
+            
+            void main() {{
+                // Apply zoom and pan
+                vec2 position = (a_position * u_zoom + u_pan) / u_resolution * 2.0 - 1.0;
+                position.y *= -1.0; // Flip Y axis
+                gl_Position = vec4(position, 0.0, 1.0);
+                v_color = a_color;
+            }}
+        `;
+        
+        // Fragment shader source
+        const fsSource = `
+            precision mediump float;
+            varying vec4 v_color;
+            
+            void main() {{
+                gl_FragColor = v_color;
+            }}
+        `;
+        
+        // Initialize WebGL
+        function initWebGL() {{
+            if (!gl) {{
+                alert('WebGL not supported');
+                return false;
+            }}
+            
+            // Create shaders
+            const vertexShader = createShader(gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = createShader(gl.FRAGMENT_SHADER, fsSource);
+            
+            // Create program
+            shaderProgram = gl.createProgram();
+            gl.attachShader(shaderProgram, vertexShader);
+            gl.attachShader(shaderProgram, fragmentShader);
+            gl.linkProgram(shaderProgram);
+            
+            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {{
+                console.error('Unable to initialize shader program:', gl.getProgramInfoLog(shaderProgram));
+                return false;
+            }}
+            
+            // Create buffers
+            positionBuffer = gl.createBuffer();
+            colorBuffer = gl.createBuffer();
+            
+            // Set clear color
+            const bgColor = hexToRgb(backgroundColor);
+            gl.clearColor(bgColor.r, bgColor.g, bgColor.b, 1.0);
+            
+            // Enable blending for anti-aliasing
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+            
+            // Set line width
+            gl.lineWidth(1.0);
+            
+            return true;
+        }}
+        
+        function createShader(type, source) {{
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {{
+                console.error('Shader compilation error:', gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }}
+            
+            return shader;
+        }}
+        
+        function hexToRgb(hex) {{
+            const result = /^#?([a-f\d]{{2}})([a-f\d]{{2}})([a-f\d]{{2}})$/i.exec(hex);
+            return result ? {{
+                r: parseInt(result[1], 16) / 255,
+                g: parseInt(result[2], 16) / 255,
+                b: parseInt(result[3], 16) / 255
+            }} : {{ r: 0, g: 0, b: 0 }};
+        }}
 
         // Coordinate projection functions - match PNG generation exactly
         function projectCoords(x, y) {{
@@ -885,28 +983,23 @@ fn generate_html_viewer(
             return {{ x: projX, y: projY }};
         }}
 
-        function drawPlot() {{
-            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+        function prepareLineData() {{
+            lineVertices = [];
+            lineColors = [];
             
-            // Set background
-            ctx.fillStyle = backgroundColor;
-            ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-            
-            // Draw sequence boundaries
-            ctx.strokeStyle = borderColor;
-            ctx.lineWidth = 0.5;
+            // Add grid lines (sequence boundaries)
+            const gridColor = hexToRgb(borderColor);
             
             // Target boundaries (vertical lines)
             targets.forEach(target => {{
                 if (target.offset > 0) {{
                     const coords = projectCoords(target.offset, 0);
-                    const x = coords.x * zoom + panX;
-                    if (x >= 0 && x <= canvasWidth) {{
-                        ctx.beginPath();
-                        ctx.moveTo(x, 0);
-                        ctx.lineTo(x, canvasHeight);
-                        ctx.stroke();
-                    }}
+                    const endCoords = projectCoords(target.offset, queryLength);
+                    
+                    lineVertices.push(coords.x, coords.y);
+                    lineVertices.push(endCoords.x, endCoords.y);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 0.3);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 0.3);
                 }}
             }});
             
@@ -914,91 +1007,95 @@ fn generate_html_viewer(
             queries.forEach(query => {{
                 if (query.offset > 0) {{
                     const coords = projectCoords(0, query.offset);
-                    const y = coords.y * zoom + panY;
-                    if (y >= 0 && y <= canvasHeight) {{
-                        ctx.beginPath();
-                        ctx.moveTo(0, y);
-                        ctx.lineTo(canvasWidth, y);
-                        ctx.stroke();
-                    }}
+                    const endCoords = projectCoords(targetLength, query.offset);
+                    
+                    lineVertices.push(coords.x, coords.y);
+                    lineVertices.push(endCoords.x, endCoords.y);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 0.3);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 0.3);
                 }}
             }});
             
-            // Level-of-detail rendering
-            const viewSizeTarget = Math.abs((canvasWidth / zoom) * (targetLength / canvasWidth));
-            const viewSizeQuery = Math.abs((canvasHeight / zoom) * (queryLength / canvasHeight));
-            const totalViewSize = viewSizeTarget + viewSizeQuery;
+            // Add alignment lines
+            const alignColor = hexToRgb(lineColor);
             
-            if (totalViewSize > 100000) {{
-                // High-level view: use summary data
-                ctx.globalAlpha = 0.6;
-                summaryData.forEach(cell => {{
-                    const cellWidth = canvasWidth / GRID_SIZE;
-                    const cellHeight = canvasHeight / GRID_SIZE;
-                    const x = (cell.gx * cellWidth) * zoom + panX;
-                    const y = (cell.gy * cellHeight) * zoom + panY;
-                    const w = cellWidth * zoom;
-                    const h = cellHeight * zoom;
-                    
-                    // Only draw visible cells
-                    if (x + w >= 0 && x <= canvasWidth && y + h >= 0 && y <= canvasHeight) {{
-                        const intensity = Math.min(1.0, cell.density / 20); // Normalize density
-                        const alpha = Math.max(0.1, intensity);
-                        
-                        // Color based on reverse ratio
-                        if (cell.revRatio > 0.5) {{
-                            ctx.fillStyle = darkMode ? `rgba(255, 100, 100, ${{alpha}})` : `rgba(200, 0, 0, ${{alpha}})`;
-                        }} else {{
-                            ctx.fillStyle = darkMode ? `rgba(255, 255, 255, ${{alpha}})` : `rgba(0, 0, 0, ${{alpha}})`;
-                        }}
-                        
-                        ctx.fillRect(x, y, w, h);
-                    }}
-                }});
-            }} else {{
-                // Detailed view: draw individual alignments
-                ctx.strokeStyle = lineColor;
-                ctx.lineWidth = 1.0;
-                ctx.globalAlpha = 0.7;
+            // Calculate visible bounds for frustum culling
+            const viewLeft = -panX / zoom;
+            const viewRight = (canvasWidth - panX) / zoom;
+            const viewTop = -panY / zoom;
+            const viewBottom = (canvasHeight - panY) / zoom;
+            
+            alignments.forEach(alignment => {{
+                const startCoords = projectCoords(alignment.x, alignment.y);
+                const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
+                const endY = alignment.y + alignment.len;
+                const endCoords = projectCoords(endX, endY);
                 
-                alignments.forEach(alignment => {{
-                    // Use same coordinate projection as PNG generation
-                    const startCoords = projectCoords(alignment.x, alignment.y);
-                    const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
-                    const endY = alignment.y + alignment.len;
-                    const endCoords = projectCoords(endX, endY);
-                    
-                    const startX = startCoords.x * zoom + panX;
-                    const startY = startCoords.y * zoom + panY;
-                    const endXPos = endCoords.x * zoom + panX;
-                    const endYPos = endCoords.y * zoom + panY;
-                    
-                    // Only draw if visible
-                    if ((startX >= -10 && startX <= canvasWidth + 10) || (endXPos >= -10 && endXPos <= canvasWidth + 10)) {{
-                        ctx.strokeStyle = alignment.rev ? 
-                            (darkMode ? '#ff6666' : '#cc0000') : lineColor;
-                        ctx.beginPath();
-                        ctx.moveTo(startX, startY);
-                        ctx.lineTo(endXPos, endYPos);
-                        ctx.stroke();
-                    }}
-                }});
-            }}
+                // Simple frustum culling - check if line might be visible
+                const minX = Math.min(startCoords.x, endCoords.x);
+                const maxX = Math.max(startCoords.x, endCoords.x);
+                const minY = Math.min(startCoords.y, endCoords.y);
+                const maxY = Math.max(startCoords.y, endCoords.y);
+                
+                if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
+                    lineVertices.push(startCoords.x, startCoords.y);
+                    lineVertices.push(endCoords.x, endCoords.y);
+                    lineColors.push(alignColor.r, alignColor.g, alignColor.b, 0.8);
+                    lineColors.push(alignColor.r, alignColor.g, alignColor.b, 0.8);
+                }}
+            }});
+        }}
+        
+        function drawPlot() {{
+            if (!gl) return;
             
-            // Draw zoom selection box
+            // Handle canvas size
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+            
+            gl.viewport(0, 0, canvasWidth, canvasHeight);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            
+            if (lineVertices.length === 0) return;
+            
+            // Use shader program
+            gl.useProgram(shaderProgram);
+            
+            // Set uniforms
+            const resolutionLoc = gl.getUniformLocation(shaderProgram, 'u_resolution');
+            const panLoc = gl.getUniformLocation(shaderProgram, 'u_pan');
+            const zoomLoc = gl.getUniformLocation(shaderProgram, 'u_zoom');
+            
+            gl.uniform2f(resolutionLoc, canvasWidth, canvasHeight);
+            gl.uniform2f(panLoc, panX, panY);
+            gl.uniform1f(zoomLoc, zoom);
+            
+            // Bind position buffer
+            const positionLoc = gl.getAttribLocation(shaderProgram, 'a_position');
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lineVertices), gl.DYNAMIC_DRAW);
+            gl.enableVertexAttribArray(positionLoc);
+            gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+            
+            // Bind color buffer
+            const colorLoc = gl.getAttribLocation(shaderProgram, 'a_color');
+            gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(lineColors), gl.DYNAMIC_DRAW);
+            gl.enableVertexAttribArray(colorLoc);
+            gl.vertexAttribPointer(colorLoc, 4, gl.FLOAT, false, 0, 0);
+            
+            // Draw lines
+            gl.drawArrays(gl.LINES, 0, lineVertices.length / 2);
+            
+            // Draw selection box if active
             if (isBoxSelecting) {{
-                ctx.strokeStyle = darkMode ? '#00ff00' : '#008800';
-                ctx.lineWidth = 2;
-                ctx.globalAlpha = 0.5;
-                ctx.fillStyle = darkMode ? 'rgba(0, 255, 0, 0.1)' : 'rgba(0, 136, 0, 0.1)';
-                
-                const boxWidth = boxEndX - boxStartX;
-                const boxHeight = boxEndY - boxStartY;
-                ctx.fillRect(boxStartX, boxStartY, boxWidth, boxHeight);
-                ctx.strokeRect(boxStartX, boxStartY, boxWidth, boxHeight);
+                drawSelectionBox();
             }}
-            
-            ctx.globalAlpha = 1.0;
+        }}
+        
+        function drawSelectionBox() {{
+            // For now, we'll skip the selection box in WebGL
+            // Could be implemented with a separate draw call if needed
         }}
 
         function pixelToGenomicCoords(pixelX, pixelY) {{
@@ -1127,6 +1224,7 @@ fn generate_html_viewer(
         }}
 
         function updateDisplay() {{
+            prepareLineData();  // Rebuild line data with frustum culling
             drawPlot();
             updateLabels();
             drawMinimap();
@@ -1255,7 +1353,7 @@ fn generate_html_viewer(
             
             // More responsive zoom factors
             const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-            const newZoom = Math.max(0.1, Math.min(50, zoom * zoomFactor));
+            const newZoom = Math.max(0.1, Math.min(10000, zoom * zoomFactor));
             
             if (newZoom !== zoom) {{
                 // Calculate the point under the mouse in canvas space (before zoom)
@@ -1288,7 +1386,7 @@ fn generate_html_viewer(
             const canvasCenterY = (boxCenterY - panY) / zoom;
             
             // Update zoom
-            zoom = Math.max(0.1, Math.min(50, newZoom));
+            zoom = Math.max(0.1, Math.min(10000, newZoom));
             
             // Pan to center the box
             panX = canvasWidth / 2 - canvasCenterX * zoom;
@@ -1303,7 +1401,12 @@ fn generate_html_viewer(
         }}
 
         // Initialize
-        updateDisplay();
+        if (initWebGL()) {{
+            prepareLineData();
+            updateDisplay();
+        }} else {{
+            document.body.innerHTML = '<h1>WebGL not supported</h1>';
+        }}
     </script>
 </body>
 </html>"#,
