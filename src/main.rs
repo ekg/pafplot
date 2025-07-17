@@ -587,34 +587,63 @@ fn main() {
 
     // Generate HTML viewer if requested
     if matches.is_present("html") {
-        generate_html_viewer(&paf, &raw, axes, output_png, dark, using_zoom, (target_range, query_range));
+        generate_html_viewer(&paf, axes, output_png, dark, using_zoom, (target_range, query_range));
     }
 }
 
-fn collect_alignment_data(paf: &PafFile) -> String {
+fn collect_alignment_data(paf: &PafFile) -> (String, String) {
     let mut alignments = Vec::new();
+    let mut summary_grid = std::collections::HashMap::new();
+    let grid_size = 1000; // Grid resolution for summary view
     
+    // Collect both detailed alignments and summary data
     paf.for_each_match_in_file(|_c, x, rev, y, len| {
+        // Detailed alignment data
         alignments.push(format!(
             r#"{{"x":{},"y":{},"len":{},"rev":{}}}"#,
             x, y, len, rev
         ));
+        
+        // Summary grid - bin alignments into grid cells
+        let grid_x = (x as f64 / paf.target_length * grid_size as f64) as usize;
+        let grid_y = (y as f64 / paf.query_length * grid_size as f64) as usize;
+        let key = (grid_x, grid_y);
+        
+        let entry = summary_grid.entry(key).or_insert((0, 0, 0)); // (count, total_length, rev_count)
+        entry.0 += 1;
+        entry.1 += len;
+        if rev { entry.2 += 1; }
     });
     
-    format!("[{}]", alignments.join(","))
+    // Convert summary grid to JSON
+    let mut summary_data = Vec::new();
+    for ((gx, gy), (count, total_len, rev_count)) in summary_grid {
+        let density = count as f64;
+        let avg_len = total_len as f64 / count as f64;
+        let rev_ratio = rev_count as f64 / count as f64;
+        
+        summary_data.push(format!(
+            r#"{{"gx":{},"gy":{},"density":{},"avgLen":{},"revRatio":{}}}"#,
+            gx, gy, density, avg_len, rev_ratio
+        ));
+    }
+    
+    let alignments_json = format!("[{}]", alignments.join(","));
+    let summary_json = format!("[{}]", summary_data.join(","));
+    
+    (alignments_json, summary_json)
 }
 
 fn generate_html_viewer(
     paf: &PafFile,
-    _raw_image: &[u8],
     axes: (usize, usize),
-    png_filename: &str,
+    output_filename: &str,
     dark: bool,
     using_zoom: bool,
     ranges: ((usize, usize), (usize, usize)),
 ) {
     // Collect alignment data for canvas rendering
-    let alignments_json = collect_alignment_data(paf);
+    let (alignments_json, summary_json) = collect_alignment_data(paf);
 
     // Generate sequence metadata as JSON
     let mut targets_json = String::from("[");
@@ -722,6 +751,27 @@ fn generate_html_viewer(
             font-size: 12px;
             z-index: 20;
         }}
+        .minimap {{
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 200px;
+            height: 150px;
+            background-color: {};
+            border: 2px solid {};
+            z-index: 25;
+            overflow: hidden;
+        }}
+        .minimap-canvas {{
+            width: 100%;
+            height: 100%;
+        }}
+        .minimap-viewport {{
+            position: absolute;
+            border: 2px solid {};
+            background-color: {};
+            pointer-events: none;
+        }}
         .controls {{
             margin-bottom: 20px;
         }}
@@ -739,7 +789,7 @@ fn generate_html_viewer(
         
         <div class="controls">
             <button onclick="resetZoom()">Reset Zoom</button>
-            <span class="zoom-info">Scroll wheel to zoom, drag to pan</span>
+            <span class="zoom-info">Scroll wheel to zoom, left-drag to pan, right-drag to zoom-to-box</span>
         </div>
         
         <div class="plot-area" id="plotArea">
@@ -760,6 +810,11 @@ fn generate_html_viewer(
                 Pan: <span id="panInfo">0, 0</span>
             </div>
         </div>
+        
+        <div class="minimap" id="minimap">
+            <canvas class="minimap-canvas" id="minimapCanvas"></canvas>
+            <div class="minimap-viewport" id="minimapViewport"></div>
+        </div>
     </div>
 
     <script>
@@ -772,9 +827,13 @@ fn generate_html_viewer(
         const panInfo = document.getElementById('panInfo');
         const targetLabels = document.getElementById('targetLabels');
         const queryLabels = document.getElementById('queryLabels');
+        const minimapCanvas = document.getElementById('minimapCanvas');
+        const minimapCtx = minimapCanvas.getContext('2d');
+        const minimapViewport = document.getElementById('minimapViewport');
 
         // Plot data
         const alignments = {};
+        const summaryData = {};
         const targets = {};
         const queries = {};
         const canvasWidth = {};
@@ -785,6 +844,7 @@ fn generate_html_viewer(
         const targetRange = {};
         const queryRange = {};
         const darkMode = {};
+        const GRID_SIZE = 1000;
 
         // Zoom and pan state
         let zoom = 1.0;
@@ -795,11 +855,35 @@ fn generate_html_viewer(
         let dragStartY = 0;
         let dragStartPanX = 0;
         let dragStartPanY = 0;
+        
+        // Zoom-to-box state
+        let isBoxSelecting = false;
+        let boxStartX = 0;
+        let boxStartY = 0;
+        let boxEndX = 0;
+        let boxEndY = 0;
 
         // Colors
         const backgroundColor = darkMode ? '#1a1a1a' : '#ffffff';
         const lineColor = darkMode ? '#ffffff' : '#000000';
         const borderColor = darkMode ? '#444444' : '#cccccc';
+
+        // Coordinate projection functions - match PNG generation exactly
+        function projectCoords(x, y) {{
+            let projX, projY;
+            if (usingZoom) {{
+                // Match project_xy_zoom from Rust code
+                projX = canvasWidth * ((x - targetRange[0]) / (targetRange[1] - targetRange[0]));
+                projY = canvasHeight * ((y - queryRange[0]) / (queryRange[1] - queryRange[0]));
+            }} else {{
+                // Match project_xy from Rust code
+                projX = canvasWidth * (x / targetLength);
+                projY = canvasHeight * (y / queryLength);
+            }}
+            // Y-axis flip to match PNG (bottom-left to top-left origin)
+            projY = canvasHeight - projY;
+            return {{ x: projX, y: projY }};
+        }}
 
         function drawPlot() {{
             ctx.clearRect(0, 0, canvasWidth, canvasHeight);
@@ -814,52 +898,124 @@ fn generate_html_viewer(
             
             // Target boundaries (vertical lines)
             targets.forEach(target => {{
-                const x = ((target.offset / targetLength) * canvasWidth) * zoom + panX;
-                if (x >= 0 && x <= canvasWidth) {{
-                    ctx.beginPath();
-                    ctx.moveTo(x, 0);
-                    ctx.lineTo(x, canvasHeight);
-                    ctx.stroke();
+                if (target.offset > 0) {{
+                    const coords = projectCoords(target.offset, 0);
+                    const x = coords.x * zoom + panX;
+                    if (x >= 0 && x <= canvasWidth) {{
+                        ctx.beginPath();
+                        ctx.moveTo(x, 0);
+                        ctx.lineTo(x, canvasHeight);
+                        ctx.stroke();
+                    }}
                 }}
             }});
             
             // Query boundaries (horizontal lines)
             queries.forEach(query => {{
-                const y = (((queryLength - query.offset - query.length) / queryLength) * canvasHeight) * zoom + panY;
-                if (y >= 0 && y <= canvasHeight) {{
-                    ctx.beginPath();
-                    ctx.moveTo(0, y);
-                    ctx.lineTo(canvasWidth, y);
-                    ctx.stroke();
+                if (query.offset > 0) {{
+                    const coords = projectCoords(0, query.offset);
+                    const y = coords.y * zoom + panY;
+                    if (y >= 0 && y <= canvasHeight) {{
+                        ctx.beginPath();
+                        ctx.moveTo(0, y);
+                        ctx.lineTo(canvasWidth, y);
+                        ctx.stroke();
+                    }}
                 }}
             }});
             
-            // Draw alignments
-            ctx.strokeStyle = lineColor;
-            ctx.lineWidth = 1.0;
-            ctx.globalAlpha = 0.7;
+            // Level-of-detail rendering
+            const viewSizeTarget = Math.abs((canvasWidth / zoom) * (targetLength / canvasWidth));
+            const viewSizeQuery = Math.abs((canvasHeight / zoom) * (queryLength / canvasHeight));
+            const totalViewSize = viewSizeTarget + viewSizeQuery;
             
-            alignments.forEach(alignment => {{
-                const startX = ((alignment.x / targetLength) * canvasWidth) * zoom + panX;
-                const startY = (((queryLength - alignment.y) / queryLength) * canvasHeight) * zoom + panY;
-                const endX = (((alignment.x + (alignment.rev ? -alignment.len : alignment.len)) / targetLength) * canvasWidth) * zoom + panX;
-                const endY = (((queryLength - alignment.y - alignment.len) / queryLength) * canvasHeight) * zoom + panY;
+            if (totalViewSize > 100000) {{
+                // High-level view: use summary data
+                ctx.globalAlpha = 0.6;
+                summaryData.forEach(cell => {{
+                    const cellWidth = canvasWidth / GRID_SIZE;
+                    const cellHeight = canvasHeight / GRID_SIZE;
+                    const x = (cell.gx * cellWidth) * zoom + panX;
+                    const y = (cell.gy * cellHeight) * zoom + panY;
+                    const w = cellWidth * zoom;
+                    const h = cellHeight * zoom;
+                    
+                    // Only draw visible cells
+                    if (x + w >= 0 && x <= canvasWidth && y + h >= 0 && y <= canvasHeight) {{
+                        const intensity = Math.min(1.0, cell.density / 20); // Normalize density
+                        const alpha = Math.max(0.1, intensity);
+                        
+                        // Color based on reverse ratio
+                        if (cell.revRatio > 0.5) {{
+                            ctx.fillStyle = darkMode ? `rgba(255, 100, 100, ${{alpha}})` : `rgba(200, 0, 0, ${{alpha}})`;
+                        }} else {{
+                            ctx.fillStyle = darkMode ? `rgba(255, 255, 255, ${{alpha}})` : `rgba(0, 0, 0, ${{alpha}})`;
+                        }}
+                        
+                        ctx.fillRect(x, y, w, h);
+                    }}
+                }});
+            }} else {{
+                // Detailed view: draw individual alignments
+                ctx.strokeStyle = lineColor;
+                ctx.lineWidth = 1.0;
+                ctx.globalAlpha = 0.7;
                 
-                // Only draw if visible
-                if ((startX >= -10 && startX <= canvasWidth + 10) || (endX >= -10 && endX <= canvasWidth + 10)) {{
-                    ctx.beginPath();
-                    ctx.moveTo(startX, startY);
-                    ctx.lineTo(endX, endY);
-                    ctx.stroke();
-                }}
-            }});
+                alignments.forEach(alignment => {{
+                    // Use same coordinate projection as PNG generation
+                    const startCoords = projectCoords(alignment.x, alignment.y);
+                    const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
+                    const endY = alignment.y + alignment.len;
+                    const endCoords = projectCoords(endX, endY);
+                    
+                    const startX = startCoords.x * zoom + panX;
+                    const startY = startCoords.y * zoom + panY;
+                    const endXPos = endCoords.x * zoom + panX;
+                    const endYPos = endCoords.y * zoom + panY;
+                    
+                    // Only draw if visible
+                    if ((startX >= -10 && startX <= canvasWidth + 10) || (endXPos >= -10 && endXPos <= canvasWidth + 10)) {{
+                        ctx.strokeStyle = alignment.rev ? 
+                            (darkMode ? '#ff6666' : '#cc0000') : lineColor;
+                        ctx.beginPath();
+                        ctx.moveTo(startX, startY);
+                        ctx.lineTo(endXPos, endYPos);
+                        ctx.stroke();
+                    }}
+                }});
+            }}
+            
+            // Draw zoom selection box
+            if (isBoxSelecting) {{
+                ctx.strokeStyle = darkMode ? '#00ff00' : '#008800';
+                ctx.lineWidth = 2;
+                ctx.globalAlpha = 0.5;
+                ctx.fillStyle = darkMode ? 'rgba(0, 255, 0, 0.1)' : 'rgba(0, 136, 0, 0.1)';
+                
+                const boxWidth = boxEndX - boxStartX;
+                const boxHeight = boxEndY - boxStartY;
+                ctx.fillRect(boxStartX, boxStartY, boxWidth, boxHeight);
+                ctx.strokeRect(boxStartX, boxStartY, boxWidth, boxHeight);
+            }}
             
             ctx.globalAlpha = 1.0;
         }}
 
         function pixelToGenomicCoords(pixelX, pixelY) {{
-            const genomicX = ((pixelX - panX) / zoom) * (targetLength / canvasWidth);
-            const genomicY = queryLength - ((pixelY - panY) / zoom) * (queryLength / canvasHeight);
+            // Convert screen coordinates back to projected coordinates
+            const projX = (pixelX - panX) / zoom;
+            const projY = (pixelY - panY) / zoom;
+            
+            // Reverse the projection (inverse of projectCoords)
+            let genomicX, genomicY;
+            
+            if (usingZoom) {{
+                genomicX = targetRange[0] + (projX / canvasWidth) * (targetRange[1] - targetRange[0]);
+                genomicY = queryRange[0] + ((canvasHeight - projY) / canvasHeight) * (queryRange[1] - queryRange[0]);
+            }} else {{
+                genomicX = (projX / canvasWidth) * targetLength;
+                genomicY = ((canvasHeight - projY) / canvasHeight) * queryLength;
+            }}
             
             return {{
                 target: Math.max(0, Math.min(targetLength, Math.round(genomicX))),
@@ -886,7 +1042,8 @@ fn generate_html_viewer(
             
             // Target labels
             targets.forEach(target => {{
-                const x = ((target.offset / targetLength) * canvasWidth) * zoom + panX;
+                const coords = projectCoords(target.offset, 0);
+                const x = coords.x * zoom + panX;
                 if (x >= -50 && x <= canvasWidth + 50) {{
                     const label = document.createElement('div');
                     label.className = 'label target-label';
@@ -897,9 +1054,10 @@ fn generate_html_viewer(
                 }}
             }});
             
-            // Query labels
+            // Query labels  
             queries.forEach(query => {{
-                const y = (((queryLength - query.offset - query.length) / queryLength) * canvasHeight) * zoom + panY;
+                const coords = projectCoords(0, query.offset + query.length);
+                const y = coords.y * zoom + panY;
                 if (y >= -20 && y <= canvasHeight + 20) {{
                     const label = document.createElement('div');
                     label.className = 'label query-label';
@@ -911,9 +1069,67 @@ fn generate_html_viewer(
             }});
         }}
 
+        function drawMinimap() {{
+            // Set minimap size
+            minimapCanvas.width = 200;
+            minimapCanvas.height = 150;
+            
+            // Clear and draw background
+            minimapCtx.fillStyle = backgroundColor;
+            minimapCtx.fillRect(0, 0, 200, 150);
+            
+            // Draw simplified plot
+            minimapCtx.strokeStyle = borderColor;
+            minimapCtx.lineWidth = 0.5;
+            
+            // Draw a simplified version of alignments
+            if (alignments.length < 5000) {{
+                minimapCtx.globalAlpha = 0.3;
+                minimapCtx.strokeStyle = lineColor;
+                alignments.forEach(alignment => {{
+                    const startCoords = projectCoords(alignment.x, alignment.y);
+                    const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
+                    const endY = alignment.y + alignment.len;
+                    const endCoords = projectCoords(endX, endY);
+                    
+                    minimapCtx.beginPath();
+                    minimapCtx.moveTo(startCoords.x * 200 / canvasWidth, startCoords.y * 150 / canvasHeight);
+                    minimapCtx.lineTo(endCoords.x * 200 / canvasWidth, endCoords.y * 150 / canvasHeight);
+                    minimapCtx.stroke();
+                }});
+            }} else {{
+                // Draw grid for large datasets
+                minimapCtx.fillStyle = darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+                for (let i = 0; i < 20; i++) {{
+                    for (let j = 0; j < 15; j++) {{
+                        if ((i + j) % 2 === 0) {{
+                            minimapCtx.fillRect(i * 10, j * 10, 10, 10);
+                        }}
+                    }}
+                }}
+            }}
+            
+            // Update viewport rectangle
+            const viewLeft = Math.max(0, -panX) / zoom;
+            const viewTop = Math.max(0, -panY) / zoom;
+            const viewWidth = Math.min(canvasWidth, canvasWidth / zoom);
+            const viewHeight = Math.min(canvasHeight, canvasHeight / zoom);
+            
+            const vpLeft = (viewLeft / canvasWidth) * 200;
+            const vpTop = (viewTop / canvasHeight) * 150;
+            const vpWidth = (viewWidth / canvasWidth) * 200;
+            const vpHeight = (viewHeight / canvasHeight) * 150;
+            
+            minimapViewport.style.left = vpLeft + 'px';
+            minimapViewport.style.top = vpTop + 'px';
+            minimapViewport.style.width = vpWidth + 'px';
+            minimapViewport.style.height = vpHeight + 'px';
+        }}
+
         function updateDisplay() {{
             drawPlot();
             updateLabels();
+            drawMinimap();
             zoomLevel.textContent = zoom.toFixed(2) + 'x';
             panInfo.textContent = `${{Math.round(panX)}}, ${{Math.round(panY)}}`;
         }}
@@ -927,6 +1143,13 @@ fn generate_html_viewer(
             if (isDragging) {{
                 panX = dragStartPanX + (pixelX - dragStartX);
                 panY = dragStartPanY + (pixelY - dragStartY);
+                updateDisplay();
+                return;
+            }}
+            
+            if (isBoxSelecting) {{
+                boxEndX = pixelX;
+                boxEndY = pixelY;
                 updateDisplay();
                 return;
             }}
@@ -971,40 +1194,106 @@ fn generate_html_viewer(
         }});
 
         canvas.addEventListener('mousedown', function(e) {{
-            isDragging = true;
-            dragStartX = e.clientX - canvas.getBoundingClientRect().left;
-            dragStartY = e.clientY - canvas.getBoundingClientRect().top;
-            dragStartPanX = panX;
-            dragStartPanY = panY;
-            canvas.style.cursor = 'grabbing';
-        }});
-
-        canvas.addEventListener('mouseup', function() {{
-            isDragging = false;
-            canvas.style.cursor = 'crosshair';
-        }});
-
-        canvas.addEventListener('wheel', function(e) {{
             e.preventDefault();
             const rect = canvas.getBoundingClientRect();
             const mouseX = e.clientX - rect.left;
             const mouseY = e.clientY - rect.top;
             
-            const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-            const newZoom = Math.max(0.1, Math.min(10, zoom * zoomFactor));
-            
-            if (newZoom !== zoom) {{
-                // Zoom towards mouse position
-                const genomicBefore = pixelToGenomicCoords(mouseX, mouseY);
-                zoom = newZoom;
-                const genomicAfter = pixelToGenomicCoords(mouseX, mouseY);
+            if (e.button === 0) {{ // Left click - pan
+                isDragging = true;
+                dragStartX = mouseX;
+                dragStartY = mouseY;
+                dragStartPanX = panX;
+                dragStartPanY = panY;
+                canvas.style.cursor = 'grabbing';
+            }} else if (e.button === 2) {{ // Right click - zoom box
+                isBoxSelecting = true;
+                boxStartX = mouseX;
+                boxStartY = mouseY;
+                boxEndX = mouseX;
+                boxEndY = mouseY;
+                canvas.style.cursor = 'crosshair';
+            }}
+        }});
+
+        canvas.addEventListener('mouseup', function(e) {{
+            if (e.button === 0 && isDragging) {{ // Left click release
+                isDragging = false;
+                canvas.style.cursor = 'crosshair';
+            }} else if (e.button === 2 && isBoxSelecting) {{ // Right click release
+                isBoxSelecting = false;
+                canvas.style.cursor = 'crosshair';
                 
-                panX += (genomicAfter.target - genomicBefore.target) * (canvasWidth / targetLength) * zoom;
-                panY += (genomicAfter.query - genomicBefore.query) * (canvasHeight / queryLength) * zoom;
+                // Zoom to selected box
+                const boxWidth = Math.abs(boxEndX - boxStartX);
+                const boxHeight = Math.abs(boxEndY - boxStartY);
+                
+                if (boxWidth > 10 && boxHeight > 10) {{
+                    zoomToBox(
+                        Math.min(boxStartX, boxEndX),
+                        Math.min(boxStartY, boxEndY),
+                        boxWidth,
+                        boxHeight
+                    );
+                }}
                 
                 updateDisplay();
             }}
         }});
+
+        canvas.addEventListener('contextmenu', function(e) {{
+            e.preventDefault(); // Prevent context menu
+        }});
+
+        canvas.addEventListener('wheel', function(e) {{
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            // More responsive zoom factors
+            const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+            const newZoom = Math.max(0.1, Math.min(50, zoom * zoomFactor));
+            
+            if (newZoom !== zoom) {{
+                // Calculate the point under the mouse in canvas space (before zoom)
+                const pointX = (mouseX - panX) / zoom;
+                const pointY = (mouseY - panY) / zoom;
+                
+                // Update zoom
+                zoom = newZoom;
+                
+                // Adjust pan so the same point stays under the mouse
+                panX = mouseX - pointX * zoom;
+                panY = mouseY - pointY * zoom;
+                
+                updateDisplay();
+            }}
+        }}, {{ passive: false }});
+
+        function zoomToBox(boxX, boxY, boxWidth, boxHeight) {{
+            // Calculate zoom to fit the selected box in the viewport
+            const zoomX = canvasWidth / boxWidth;
+            const zoomY = canvasHeight / boxHeight;
+            const newZoom = Math.min(zoomX, zoomY) * 0.9; // 0.9 for padding
+            
+            // Calculate center of box in current view
+            const boxCenterX = boxX + boxWidth / 2;
+            const boxCenterY = boxY + boxHeight / 2;
+            
+            // Convert to canvas coordinates
+            const canvasCenterX = (boxCenterX - panX) / zoom;
+            const canvasCenterY = (boxCenterY - panY) / zoom;
+            
+            // Update zoom
+            zoom = Math.max(0.1, Math.min(50, newZoom));
+            
+            // Pan to center the box
+            panX = canvasWidth / 2 - canvasCenterX * zoom;
+            panY = canvasHeight / 2 - canvasCenterY * zoom;
+        }}
 
         function resetZoom() {{
             zoom = 1.0;
@@ -1018,7 +1307,7 @@ fn generate_html_viewer(
     </script>
 </body>
 </html>"#,
-        png_filename,
+        output_filename,
         if dark { "#1a1a1a" } else { "#ffffff" },
         if dark { "#ffffff" } else { "#000000" },
         if dark { "#444444" } else { "#cccccc" },
@@ -1026,13 +1315,18 @@ fn generate_html_viewer(
         if dark { "#444444" } else { "#cccccc" },
         if dark { "#2a2a2a" } else { "#f5f5f5" },
         if dark { "#444444" } else { "#cccccc" },
+        if dark { "#2a2a2a" } else { "#f0f0f0" },  // minimap background
+        if dark { "#666666" } else { "#999999" },  // minimap border
+        if dark { "#00ff00" } else { "#0088ff" },  // viewport border
+        if dark { "rgba(0,255,0,0.2)" } else { "rgba(0,136,255,0.2)" },  // viewport fill
         if dark { "#666666" } else { "#999999" },
-        png_filename,
+        output_filename,
         alignments_json.chars().filter(|c| *c == ',').count() + 1,
         paf.targets.len(),
         paf.queries.len(),
         axes.0, axes.1,
         alignments_json,
+        summary_json,
         targets_json,
         queries_json,
         axes.0,
@@ -1045,7 +1339,11 @@ fn generate_html_viewer(
         dark,
     );
 
-    let html_filename = png_filename.replace(".png", ".html");
+    let html_filename = if output_filename.ends_with(".png") {
+        output_filename.replace(".png", ".html")
+    } else {
+        format!("{}.html", output_filename)
+    };
     std::fs::write(&html_filename, html_content)
         .expect("Failed to write HTML file");
     
