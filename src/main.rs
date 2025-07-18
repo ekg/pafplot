@@ -1147,11 +1147,8 @@ fn generate_html_viewer(
             return {{ x: projX, y: projY }};
         }}
 
-        function prepareLineData() {{
-            lineVertices = [];
-            lineColors = [];
-            
-            // Calculate visible bounds
+        // Unified viewport calculation function
+        function calculateViewportInfo() {{
             const viewLeft = -panX / zoom;
             const viewRight = (canvasWidth - panX) / zoom;
             const viewTop = -panY / zoom;
@@ -1159,15 +1156,29 @@ fn generate_html_viewer(
             const viewWidth = viewRight - viewLeft;
             const viewHeight = viewBottom - viewTop;
             
-            // Calculate viewport width in base pairs
-            const viewportWidthBp = Math.max(
-                usingZoom ? 
-                    ((viewWidth / plotWidth) * (targetRange[1] - targetRange[0])) :
-                    ((viewWidth / plotWidth) * targetLength),
-                usingZoom ? 
-                    ((viewHeight / plotHeight) * (queryRange[1] - queryRange[0])) :
-                    ((viewHeight / plotHeight) * queryLength)
-            );
+            // Calculate viewport width in base pairs - use target axis for consistency
+            const viewportWidthBp = usingZoom ? 
+                ((viewWidth / plotWidth) * (targetRange[1] - targetRange[0])) :
+                ((viewWidth / plotWidth) * targetLength);
+            
+            return {{
+                viewLeft,
+                viewRight,
+                viewTop,
+                viewBottom,
+                viewWidth,
+                viewHeight,
+                viewportWidthBp
+            }};
+        }}
+
+        function prepareLineData() {{
+            lineVertices = [];
+            lineColors = [];
+            
+            // Get consistent viewport info
+            const currentViewport = calculateViewportInfo();
+            const {{ viewLeft, viewRight, viewTop, viewBottom, viewWidth, viewHeight, viewportWidthBp }} = currentViewport;
             
             // Performance optimization: switch rendering modes based on viewport size
             const VIEWPORT_THRESHOLD = 50000; // 50kbp threshold for performance
@@ -1657,22 +1668,9 @@ fn generate_html_viewer(
             drawMinimap();
             updateLabels();
             
-            // Calculate viewport info for display
-            const viewLeft = -panX / zoom;
-            const viewRight = (canvasWidth - panX) / zoom;
-            const viewTop = -panY / zoom;
-            const viewBottom = (canvasHeight - panY) / zoom;
-            const viewWidth = viewRight - viewLeft;
-            const viewHeight = viewBottom - viewTop;
-            
-            const viewportWidthBp = Math.max(
-                usingZoom ? 
-                    ((viewWidth / plotWidth) * (targetRange[1] - targetRange[0])) :
-                    ((viewWidth / plotWidth) * targetLength),
-                usingZoom ? 
-                    ((viewHeight / plotHeight) * (queryRange[1] - queryRange[0])) :
-                    ((viewHeight / plotHeight) * queryLength)
-            );
+            // Get consistent viewport info
+            const currentViewport = calculateViewportInfo();
+            const {{ viewportWidthBp }} = currentViewport;
             
             // Update rendering mode indicator
             let mode = 'Standard';
