@@ -820,6 +820,10 @@ fn generate_html_viewer(
             font-size: 10px;
             margin-left: 5px;
         }}
+        #renderingMode {{
+            font-weight: bold;
+            color: {};
+        }}
         .minimap {{
             position: fixed;
             bottom: 20px;
@@ -881,6 +885,10 @@ fn generate_html_viewer(
             <button onclick="resetZoom()">Reset View</button>
             <button id="undoZoomBtn" onclick="undoZoom()" disabled>Undo Zoom</button>
         </div>
+        <div class="config-control">
+            <label>Rendering Mode:</label>
+            <span id="renderingMode">Standard</span>
+        </div>
     </div>
         
         <div class="info-panel">
@@ -890,7 +898,8 @@ fn generate_html_viewer(
             <div id="sequenceInfo">Hover over plot for details</div>
             <div class="zoom-info">
                 Zoom: <span id="zoomLevel">1.0x</span><br>
-                Pan: <span id="panInfo">0, 0</span>
+                Pan: <span id="panInfo">0, 0</span><br>
+                Viewport: <span id="viewportInfo">0 bp</span>
             </div>
         </div>
         
@@ -921,6 +930,8 @@ fn generate_html_viewer(
         const showLabelsCheckbox = document.getElementById('showLabelsCheckbox');
         const targetLabels = document.getElementById('targetLabels');
         const queryLabels = document.getElementById('queryLabels');
+        const renderingMode = document.getElementById('renderingMode');
+        const viewportInfo = document.getElementById('viewportInfo');
         
         // Configuration values
         let lineWidthMultiplier = 0.5;
@@ -1148,9 +1159,20 @@ fn generate_html_viewer(
             const viewWidth = viewRight - viewLeft;
             const viewHeight = viewBottom - viewTop;
             
-            // Calculate pixels per base for determining detail level
-            const pixelsPerBase = canvasWidth / viewWidth;
-            const shouldShowDetails = showDetails && pixelsPerBase > 2; // Show CIGAR details when enabled and zoomed in enough
+            // Calculate viewport width in base pairs
+            const viewportWidthBp = Math.max(
+                usingZoom ? 
+                    ((viewWidth / plotWidth) * (targetRange[1] - targetRange[0])) :
+                    ((viewWidth / plotWidth) * targetLength),
+                usingZoom ? 
+                    ((viewHeight / plotHeight) * (queryRange[1] - queryRange[0])) :
+                    ((viewHeight / plotHeight) * queryLength)
+            );
+            
+            // Performance optimization: switch rendering modes based on viewport size
+            const VIEWPORT_THRESHOLD = 50000; // 50kbp threshold for performance
+            const shouldShowAlignmentSegments = viewportWidthBp > VIEWPORT_THRESHOLD;
+            const shouldShowDetails = showDetails && !shouldShowAlignmentSegments && viewportWidthBp < 1000; // Show CIGAR details only when very zoomed in
             
             // Add grid lines (sequence boundaries)
             const gridColor = hexToRgb(borderColor);
@@ -1232,13 +1254,44 @@ fn generate_html_viewer(
                 lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
             }});
             
-            // Draw alignments - use detailed ops if available and zoomed in
+            // Draw alignments - three rendering modes based on viewport size
             const matchColor = hexToRgb(lineColor);
             const mismatchColor = hexToRgb(darkMode ? '#ff4444' : '#cc0000');
             const indelColor = hexToRgb(darkMode ? '#4444ff' : '#0000cc');
+            const summaryColor = hexToRgb(darkMode ? '#888888' : '#666666');
             
-            if (shouldShowDetails && detailedAlignments.length > 0) {{
-                // Draw detailed CIGAR operations
+            if (shouldShowAlignmentSegments) {{
+                // Mode 1: Alignment segments view (viewport > 50kbp)
+                // Draw simplified segments with reduced opacity for performance
+                let renderCount = 0;
+                const maxRenderCount = 10000; // Limit rendering for extreme performance
+                
+                alignments.forEach(alignment => {{
+                    if (renderCount >= maxRenderCount) return;
+                    
+                    const startCoords = projectCoords(alignment.x, alignment.y);
+                    const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
+                    const endY = alignment.y + alignment.len;
+                    const endCoords = projectCoords(endX, endY);
+                    
+                    // Enhanced frustum culling for performance
+                    const minX = Math.min(startCoords.x, endCoords.x);
+                    const maxX = Math.max(startCoords.x, endCoords.x);
+                    const minY = Math.min(startCoords.y, endCoords.y);
+                    const maxY = Math.max(startCoords.y, endCoords.y);
+                    
+                    if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
+                        // Use lower opacity for performance and visual clarity at this scale
+                        const alpha = Math.min(0.6, 1.0 / Math.sqrt(viewportWidthBp / 50000));
+                        lineVertices.push(startCoords.x, startCoords.y);
+                        lineVertices.push(endCoords.x, endCoords.y);
+                        lineColors.push(summaryColor.r, summaryColor.g, summaryColor.b, alpha);
+                        lineColors.push(summaryColor.r, summaryColor.g, summaryColor.b, alpha);
+                        renderCount++;
+                    }}
+                }});
+            }} else if (shouldShowDetails && detailedAlignments.length > 0) {{
+                // Mode 2: Detailed CIGAR operations (viewport < 1kbp and details enabled)
                 detailedAlignments.forEach(alignment => {{
                     alignment.ops.forEach(op => {{
                         const startCoords = projectCoords(op.x, op.y);
@@ -1250,8 +1303,8 @@ fn generate_html_viewer(
                             
                             lineVertices.push(startCoords.x, startCoords.y);
                             lineVertices.push(endCoords.x, endCoords.y);
-                            lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
-                            lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
+                            lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
+                            lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
                         }} else if (op.type === 'mismatch') {{
                             // Draw mismatches as individual segments
                             for (let i = 0; i < Math.min(op.len, 100); i++) {{ // Limit to prevent too many segments
@@ -1283,7 +1336,7 @@ fn generate_html_viewer(
                     }});
                 }});
             }} else {{
-                // Draw simple alignment lines
+                // Mode 3: Standard alignment lines (1kbp - 50kbp viewport)
                 alignments.forEach(alignment => {{
                     const startCoords = projectCoords(alignment.x, alignment.y);
                     const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
@@ -1604,9 +1657,38 @@ fn generate_html_viewer(
             drawMinimap();
             updateLabels();
             
+            // Calculate viewport info for display
+            const viewLeft = -panX / zoom;
+            const viewRight = (canvasWidth - panX) / zoom;
+            const viewTop = -panY / zoom;
+            const viewBottom = (canvasHeight - panY) / zoom;
+            const viewWidth = viewRight - viewLeft;
+            const viewHeight = viewBottom - viewTop;
+            
+            const viewportWidthBp = Math.max(
+                usingZoom ? 
+                    ((viewWidth / plotWidth) * (targetRange[1] - targetRange[0])) :
+                    ((viewWidth / plotWidth) * targetLength),
+                usingZoom ? 
+                    ((viewHeight / plotHeight) * (queryRange[1] - queryRange[0])) :
+                    ((viewHeight / plotHeight) * queryLength)
+            );
+            
+            // Update rendering mode indicator
+            let mode = 'Standard';
+            if (viewportWidthBp > 50000) {{
+                mode = 'Segments';
+            }} else if (showDetails && viewportWidthBp < 1000) {{
+                mode = 'Details';
+            }}
+            renderingMode.textContent = mode;
+            
             // Update zoom info
             zoomLevel.textContent = zoom.toFixed(2) + 'x';
             panInfo.textContent = `${{Math.round(panX)}}, ${{Math.round(panY)}}`;
+            viewportInfo.textContent = viewportWidthBp >= 1000 ? 
+                `${{Math.round(viewportWidthBp / 1000)}}k bp` : 
+                `${{Math.round(viewportWidthBp)}} bp`;
         }}
 
         // Mouse event handlers
@@ -1857,6 +1939,7 @@ fn generate_html_viewer(
         if dark { "#666666" } else { "#999999" },
         if dark { "rgba(26,26,26,0.8)" } else { "rgba(255,255,255,0.8)" },  // label background
         if dark { "#1a1a1a" } else { "#ffffff" },  // page background again
+        if dark { "#00ff00" } else { "#0088ff" },  // render mode color
         alignments_json,
         summary_json,
         detailed_json,
