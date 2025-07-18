@@ -250,7 +250,7 @@ impl PafFile {
                 match c {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap() as usize;
-                        func(c, query_pos, query_rev, target_pos, n);
+                        func(c, target_pos, query_rev, query_pos, n);
                         query_pos += if query_rev { 0 - n } else { n };
                         target_pos += n;
                         first = i + 1;
@@ -1181,9 +1181,9 @@ fn generate_html_viewer(
             const {{ viewLeft, viewRight, viewTop, viewBottom, viewWidth, viewHeight, viewportWidthBp }} = currentViewport;
             
             // Performance optimization: switch rendering modes based on viewport size
-            const VIEWPORT_THRESHOLD = 50000; // 50kbp threshold for performance
+            const VIEWPORT_THRESHOLD = 2000000; // 2Mbp threshold for performance
             const shouldShowAlignmentSegments = viewportWidthBp > VIEWPORT_THRESHOLD;
-            const shouldShowDetails = showDetails && !shouldShowAlignmentSegments && viewportWidthBp < 1000; // Show CIGAR details only when very zoomed in
+            const shouldShowDetails = showDetails && !shouldShowAlignmentSegments && viewportWidthBp < 200000; // Show CIGAR details when zoomed in to 200kb or less
             
             // Add grid lines (sequence boundaries)
             const gridColor = hexToRgb(borderColor);
@@ -1269,10 +1269,10 @@ fn generate_html_viewer(
             const matchColor = hexToRgb(lineColor);
             const mismatchColor = hexToRgb(darkMode ? '#ff4444' : '#cc0000');
             const indelColor = hexToRgb(darkMode ? '#4444ff' : '#0000cc');
-            const summaryColor = hexToRgb(darkMode ? '#888888' : '#666666');
+            const summaryColor = hexToRgb(lineColor); // Use same color as standard matches
             
             if (shouldShowAlignmentSegments) {{
-                // Mode 1: Alignment segments view (viewport > 50kbp)
+                // Mode 1: Alignment segments view (viewport > 2Mbp)
                 // Draw simplified segments with reduced opacity for performance
                 let renderCount = 0;
                 const maxRenderCount = 10000; // Limit rendering for extreme performance
@@ -1281,8 +1281,8 @@ fn generate_html_viewer(
                     if (renderCount >= maxRenderCount) return;
                     
                     const startCoords = projectCoords(alignment.x, alignment.y);
-                    const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
-                    const endY = alignment.y + alignment.len;
+                    const endX = alignment.x + alignment.len;
+                    const endY = alignment.y + (alignment.rev ? -alignment.len : alignment.len);
                     const endCoords = projectCoords(endX, endY);
                     
                     // Enhanced frustum culling for performance
@@ -1293,7 +1293,7 @@ fn generate_html_viewer(
                     
                     if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
                         // Use lower opacity for performance and visual clarity at this scale
-                        const alpha = Math.min(0.6, 1.0 / Math.sqrt(viewportWidthBp / 50000));
+                        const alpha = Math.min(0.7, 1.0 / Math.sqrt(viewportWidthBp / 2000000));
                         lineVertices.push(startCoords.x, startCoords.y);
                         lineVertices.push(endCoords.x, endCoords.y);
                         lineColors.push(summaryColor.r, summaryColor.g, summaryColor.b, alpha);
@@ -1302,14 +1302,14 @@ fn generate_html_viewer(
                     }}
                 }});
             }} else if (shouldShowDetails && detailedAlignments.length > 0) {{
-                // Mode 2: Detailed CIGAR operations (viewport < 1kbp and details enabled)
+                // Mode 2: Detailed CIGAR operations (viewport < 200kbp and details enabled)
                 detailedAlignments.forEach(alignment => {{
                     alignment.ops.forEach(op => {{
                         const startCoords = projectCoords(op.x, op.y);
                         
                         if (op.type === 'match' || op.type === 'unknown') {{
-                            const endX = op.x + op.len;
-                            const endY = op.y + (op.rev ? -op.len : op.len);
+                            const endX = op.x + (op.rev ? -op.len : op.len);
+                            const endY = op.y + op.len;
                             const endCoords = projectCoords(endX, endY);
                             
                             lineVertices.push(startCoords.x, startCoords.y);
@@ -1319,10 +1319,10 @@ fn generate_html_viewer(
                         }} else if (op.type === 'mismatch') {{
                             // Draw mismatches as individual segments
                             for (let i = 0; i < Math.min(op.len, 100); i++) {{ // Limit to prevent too many segments
-                                const mx = op.x + i;
-                                const my = op.y + (op.rev ? -i : i);
+                                const mx = op.x + (op.rev ? -i : i);
+                                const my = op.y + i;
                                 const mStartCoords = projectCoords(mx, my);
-                                const mEndCoords = projectCoords(mx + 1, my + (op.rev ? -1 : 1));
+                                const mEndCoords = projectCoords(mx + (op.rev ? -1 : 1), my + 1);
                                 
                                 lineVertices.push(mStartCoords.x, mStartCoords.y);
                                 lineVertices.push(mEndCoords.x, mEndCoords.y);
@@ -1330,14 +1330,14 @@ fn generate_html_viewer(
                                 lineColors.push(mismatchColor.r, mismatchColor.g, mismatchColor.b, 1.0);
                             }}
                         }} else if (op.type === 'insertion') {{
-                            const endCoords = projectCoords(op.x, op.y + (op.rev ? -op.len : op.len));
+                            const endCoords = projectCoords(op.x, op.y + op.len);
                             
                             lineVertices.push(startCoords.x, startCoords.y);
                             lineVertices.push(endCoords.x, endCoords.y);
                             lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
                             lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
                         }} else if (op.type === 'deletion') {{
-                            const endCoords = projectCoords(op.x + op.len, op.y);
+                            const endCoords = projectCoords(op.x + (op.rev ? -op.len : op.len), op.y);
                             
                             lineVertices.push(startCoords.x, startCoords.y);
                             lineVertices.push(endCoords.x, endCoords.y);
@@ -1347,11 +1347,11 @@ fn generate_html_viewer(
                     }});
                 }});
             }} else {{
-                // Mode 3: Standard alignment lines (1kbp - 50kbp viewport)
+                // Mode 3: Standard alignment lines (200kbp - 2Mbp viewport)
                 alignments.forEach(alignment => {{
                     const startCoords = projectCoords(alignment.x, alignment.y);
-                    const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
-                    const endY = alignment.y + alignment.len;
+                    const endX = alignment.x + alignment.len;
+                    const endY = alignment.y + (alignment.rev ? -alignment.len : alignment.len);
                     const endCoords = projectCoords(endX, endY);
                     
                     // Simple frustum culling
@@ -1674,9 +1674,9 @@ fn generate_html_viewer(
             
             // Update rendering mode indicator
             let mode = 'Standard';
-            if (viewportWidthBp > 50000) {{
+            if (viewportWidthBp > 2000000) {{
                 mode = 'Segments';
-            }} else if (showDetails && viewportWidthBp < 1000) {{
+            }} else if (showDetails && viewportWidthBp < 200000) {{
                 mode = 'Details';
             }}
             renderingMode.textContent = mode;
