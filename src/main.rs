@@ -736,21 +736,22 @@ fn generate_html_viewer(
             display: none;
         }}
         .labels {{
-            position: absolute;
-            font-size: 9px;
+            position: fixed;
+            font-size: 10px;
             font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
             pointer-events: none;
+            z-index: 15;
         }}
         .target-labels {{
-            bottom: -30px;
+            bottom: 10px;
             left: 0;
             width: 100%;
-            height: 25px;
+            height: 100px;
         }}
         .query-labels {{
-            right: -120px;
+            right: 10px;
             top: 0;
-            width: 115px;
+            width: 150px;
             height: 100%;
         }}
         .label {{
@@ -758,15 +759,21 @@ fn generate_html_viewer(
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            background-color: {};
+            padding: 2px 4px;
+            border-radius: 2px;
+            font-size: 9px;
+            opacity: 0.9;
         }}
         .target-label {{
-            transform-origin: left bottom;
+            transform-origin: left top;
             transform: rotate(-45deg);
-            bottom: 0;
+            max-width: 100px;
         }}
         .query-label {{
             text-align: right;
-            right: 5px;
+            right: 0;
+            max-width: 140px;
         }}
         .info-panel {{
             position: fixed;
@@ -847,6 +854,8 @@ fn generate_html_viewer(
 <body>
     <canvas id="plotCanvas"></canvas>
     <div class="tooltip" id="tooltip"></div>
+    <div class="labels target-labels" id="targetLabels"></div>
+    <div class="labels query-labels" id="queryLabels"></div>
     
     <div class="config-panel">
         <h3>Settings</h3>
@@ -863,6 +872,10 @@ fn generate_html_viewer(
         <div class="config-control">
             <label>Show Details:</label>
             <input type="checkbox" id="showDetailsCheckbox" checked>
+        </div>
+        <div class="config-control">
+            <label>Show Labels:</label>
+            <input type="checkbox" id="showLabelsCheckbox" checked>
         </div>
         <div class="config-control">
             <button onclick="resetZoom()">Reset View</button>
@@ -905,11 +918,15 @@ fn generate_html_viewer(
         const gridOpacitySlider = document.getElementById('gridOpacitySlider');
         const gridOpacityValue = document.getElementById('gridOpacityValue');
         const showDetailsCheckbox = document.getElementById('showDetailsCheckbox');
+        const showLabelsCheckbox = document.getElementById('showLabelsCheckbox');
+        const targetLabels = document.getElementById('targetLabels');
+        const queryLabels = document.getElementById('queryLabels');
         
         // Configuration values
         let lineWidthMultiplier = 0.5;
         let gridOpacity = 0.3;
         let showDetails = true;
+        let showLabels = true;
 
         // Plot data
         const alignments = {};
@@ -1426,39 +1443,6 @@ fn generate_html_viewer(
             return null;
         }}
 
-        function updateLabels() {{
-            // Clear existing labels
-            targetLabels.innerHTML = '';
-            queryLabels.innerHTML = '';
-            
-            // Target labels
-            targets.forEach(target => {{
-                const coords = projectCoords(target.offset, 0);
-                const x = coords.x * zoom + panX;
-                if (x >= -50 && x <= canvasWidth + 50) {{
-                    const label = document.createElement('div');
-                    label.className = 'label target-label';
-                    label.textContent = target.name;
-                    label.title = `${{target.name}} (${{target.length.toLocaleString()}} bp)`;
-                    label.style.left = (x + 5) + 'px';
-                    targetLabels.appendChild(label);
-                }}
-            }});
-            
-            // Query labels  
-            queries.forEach(query => {{
-                const coords = projectCoords(0, query.offset + query.length);
-                const y = coords.y * zoom + panY;
-                if (y >= -20 && y <= canvasHeight + 20) {{
-                    const label = document.createElement('div');
-                    label.className = 'label query-label';
-                    label.textContent = query.name;
-                    label.title = `${{query.name}} (${{query.length.toLocaleString()}} bp)`;
-                    label.style.top = y + 'px';
-                    queryLabels.appendChild(label);
-                }}
-            }});
-        }}
 
         function drawMinimap() {{
             // Set minimap size
@@ -1517,10 +1501,108 @@ fn generate_html_viewer(
             minimapViewport.style.height = vpHeight + 'px';
         }}
 
+        function updateLabels() {{
+            if (!showLabels) {{
+                targetLabels.style.display = 'none';
+                queryLabels.style.display = 'none';
+                return;
+            }}
+            
+            targetLabels.style.display = 'block';
+            queryLabels.style.display = 'block';
+            
+            // Clear existing labels
+            targetLabels.innerHTML = '';
+            queryLabels.innerHTML = '';
+            
+            // Calculate visible plot bounds
+            const viewLeft = Math.max(plotOffsetX, (-panX) / zoom);
+            const viewRight = Math.min(plotOffsetX + plotWidth, (canvasWidth - panX) / zoom);
+            const viewTop = Math.max(plotOffsetY, (-panY) / zoom);
+            const viewBottom = Math.min(plotOffsetY + plotHeight, (canvasHeight - panY) / zoom);
+            
+            // Target labels (bottom)
+            targets.forEach(target => {{
+                const startCoords = projectCoords(target.offset, 0);
+                const endCoords = projectCoords(target.offset + target.length, 0);
+                const startX = startCoords.x * zoom + panX;
+                const endX = endCoords.x * zoom + panX;
+                
+                // Check if sequence is at least partially visible
+                const seqVisible = (startX <= canvasWidth && endX >= 0);
+                
+                if (seqVisible) {{
+                    const label = document.createElement('div');
+                    label.className = 'label target-label';
+                    label.textContent = target.name;
+                    label.title = `${{target.name}} (${{target.length.toLocaleString()}} bp)`;
+                    
+                    // Calculate label position, clamping to viewport edges
+                    let labelX = startX;
+                    
+                    // If sequence extends beyond left edge, stick label to left border
+                    if (startX < 0 && endX > 0) {{
+                        labelX = 5; // Small margin from edge
+                        label.style.borderLeft = '3px solid ' + (darkMode ? '#00ff00' : '#0088ff');
+                    }}
+                    // If sequence starts beyond right edge but is visible, stick to right
+                    else if (startX > canvasWidth - 100 && startX < canvasWidth + 500) {{
+                        labelX = canvasWidth - 100;
+                        label.style.borderRight = '3px solid ' + (darkMode ? '#00ff00' : '#0088ff');
+                    }}
+                    
+                    label.style.left = labelX + 'px';
+                    label.style.bottom = '10px';
+                    targetLabels.appendChild(label);
+                }}
+            }});
+            
+            // Query labels (right side)
+            queries.forEach(query => {{
+                const startCoords = projectCoords(0, query.offset + query.length);
+                const endCoords = projectCoords(0, query.offset);
+                const startY = startCoords.y * zoom + panY;
+                const endY = endCoords.y * zoom + panY;
+                
+                // Check if sequence is at least partially visible
+                const seqVisible = (Math.min(startY, endY) <= canvasHeight && Math.max(startY, endY) >= 0);
+                
+                if (seqVisible) {{
+                    const label = document.createElement('div');
+                    label.className = 'label query-label';
+                    label.textContent = query.name;
+                    label.title = `${{query.name}} (${{query.length.toLocaleString()}} bp)`;
+                    
+                    // Calculate label position, clamping to viewport edges
+                    let labelY = startY;
+                    
+                    // If sequence extends beyond top edge, stick label to top border
+                    if (startY < 0 && endY > 0) {{
+                        labelY = 5; // Small margin from edge
+                        label.style.borderTop = '3px solid ' + (darkMode ? '#00ff00' : '#0088ff');
+                    }}
+                    // If sequence starts beyond bottom edge but is visible, stick to bottom
+                    else if (startY > canvasHeight - 50 && startY < canvasHeight + 200) {{
+                        labelY = canvasHeight - 30;
+                        label.style.borderBottom = '3px solid ' + (darkMode ? '#00ff00' : '#0088ff');
+                    }}
+                    // For sequences within viewport, clamp to visible area
+                    else if (endY > canvasHeight) {{
+                        // If sequence end is off screen, position label at a visible spot
+                        labelY = Math.min(startY, canvasHeight - 30);
+                    }}
+                    
+                    label.style.top = labelY + 'px';
+                    queryLabels.appendChild(label);
+                }}
+            }});
+        }}
+
         function updateDisplay() {{
             prepareLineData();  // Rebuild line data with frustum culling
             drawPlot();
             drawMinimap();
+            updateLabels();
             
             // Update zoom info
             zoomLevel.textContent = zoom.toFixed(2) + 'x';
@@ -1735,6 +1817,11 @@ fn generate_html_viewer(
             updateDisplay();
         }});
         
+        showLabelsCheckbox.addEventListener('change', function(e) {{
+            showLabels = e.target.checked;
+            updateDisplay();
+        }});
+        
         // Handle window resize
         window.addEventListener('resize', function() {{
             canvasWidth = window.innerWidth;
@@ -1768,6 +1855,7 @@ fn generate_html_viewer(
         if dark { "#00ff00" } else { "#0088ff" },  // viewport border
         if dark { "rgba(0,255,0,0.2)" } else { "rgba(0,136,255,0.2)" },  // viewport fill
         if dark { "#666666" } else { "#999999" },
+        if dark { "rgba(26,26,26,0.8)" } else { "rgba(255,255,255,0.8)" },  // label background
         if dark { "#1a1a1a" } else { "#ffffff" },  // page background again
         alignments_json,
         summary_json,
