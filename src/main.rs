@@ -1306,13 +1306,32 @@ fn generate_html_viewer(
                 const segmentColor = hexToRgb(darkMode ? '#333333' : '#e0e0e0');
                 
                 detailedAlignments.forEach(alignment => {{
-                    // Draw segment boundary box
+                    // First check if the entire alignment is within or intersects the viewport
                     const segmentStartCoords = projectCoords(alignment.x, alignment.y);
                     const segmentEndX = alignment.x + alignment.targetLen;
                     const segmentEndY = alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen);
                     const segmentEndCoords = projectCoords(segmentEndX, segmentEndY);
                     
-                    // Draw box outline (4 lines forming a rectangle)
+                    // Alignment bounding box in screen coordinates
+                    const alignmentMinX = Math.min(segmentStartCoords.x, segmentEndCoords.x);
+                    const alignmentMaxX = Math.max(segmentStartCoords.x, segmentEndCoords.x);
+                    const alignmentMinY = Math.min(segmentStartCoords.y, segmentEndCoords.y);
+                    const alignmentMaxY = Math.max(segmentStartCoords.y, segmentEndCoords.y);
+                    
+                    // Check if alignment intersects viewport (with generous margins for partial visibility)
+                    const margin = 50; // Allow rendering of partially visible alignments
+                    const alignmentVisible = (
+                        alignmentMaxX >= viewLeft - margin && 
+                        alignmentMinX <= viewRight + margin && 
+                        alignmentMaxY >= viewTop - margin && 
+                        alignmentMinY <= viewBottom + margin
+                    );
+                    
+                    if (!alignmentVisible) {{
+                        return; // Skip this entire alignment if it's not visible
+                    }}
+                    
+                    // Draw segment boundary box
                     const boxCorners = [
                         projectCoords(alignment.x, alignment.y),
                         projectCoords(alignment.x + alignment.targetLen, alignment.y),
@@ -1344,7 +1363,7 @@ fn generate_html_viewer(
                     lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
                     lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
                     
-                    // Now draw detailed CIGAR operations within the box
+                    // Now draw detailed CIGAR operations within the box - with individual viewport culling
                     alignment.ops.forEach(op => {{
                         const startCoords = projectCoords(op.x, op.y);
                         
@@ -1353,37 +1372,82 @@ fn generate_html_viewer(
                             const endY = op.y + op.len;
                             const endCoords = projectCoords(endX, endY);
                             
-                            lineVertices.push(startCoords.x, startCoords.y);
-                            lineVertices.push(endCoords.x, endCoords.y);
-                            lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
-                            lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
+                            // Check if this match operation intersects the viewport
+                            const opMinX = Math.min(startCoords.x, endCoords.x);
+                            const opMaxX = Math.max(startCoords.x, endCoords.x);
+                            const opMinY = Math.min(startCoords.y, endCoords.y);
+                            const opMaxY = Math.max(startCoords.y, endCoords.y);
+                            
+                            if (opMaxX >= viewLeft && opMinX <= viewRight && opMaxY >= viewTop && opMinY <= viewBottom) {{
+                                lineVertices.push(startCoords.x, startCoords.y);
+                                lineVertices.push(endCoords.x, endCoords.y);
+                                lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
+                                lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
+                            }}
                         }} else if (op.type === 'mismatch') {{
-                            // Draw mismatches as individual segments
-                            for (let i = 0; i < Math.min(op.len, 100); i++) {{ // Limit to prevent too many segments
-                                const mx = op.x + (op.rev ? -i : i);
-                                const my = op.y + i;
-                                const mStartCoords = projectCoords(mx, my);
-                                const mEndCoords = projectCoords(mx + (op.rev ? -1 : 1), my + 1);
-                                
-                                lineVertices.push(mStartCoords.x, mStartCoords.y);
-                                lineVertices.push(mEndCoords.x, mEndCoords.y);
-                                lineColors.push(mismatchColor.r, mismatchColor.g, mismatchColor.b, 1.0);
-                                lineColors.push(mismatchColor.r, mismatchColor.g, mismatchColor.b, 1.0);
+                            // Check if mismatch region intersects viewport before rendering individual segments
+                            const mismatchEndX = op.x + (op.rev ? -op.len : op.len);
+                            const mismatchEndY = op.y + op.len;
+                            const mismatchEndCoords = projectCoords(mismatchEndX, mismatchEndY);
+                            
+                            const mismatchMinX = Math.min(startCoords.x, mismatchEndCoords.x);
+                            const mismatchMaxX = Math.max(startCoords.x, mismatchEndCoords.x);
+                            const mismatchMinY = Math.min(startCoords.y, mismatchEndCoords.y);
+                            const mismatchMaxY = Math.max(startCoords.y, mismatchEndCoords.y);
+                            
+                            if (mismatchMaxX >= viewLeft && mismatchMinX <= viewRight && mismatchMaxY >= viewTop && mismatchMinY <= viewBottom) {{
+                                // Draw mismatches as individual segments, but limit count for performance
+                                const maxSegments = Math.min(op.len, 100); // Limit to prevent too many segments
+                                for (let i = 0; i < maxSegments; i++) {{
+                                    const mx = op.x + (op.rev ? -i : i);
+                                    const my = op.y + i;
+                                    const mStartCoords = projectCoords(mx, my);
+                                    const mEndCoords = projectCoords(mx + (op.rev ? -1 : 1), my + 1);
+                                    
+                                    // Individual segment viewport check for very fine-grained culling
+                                    const segMinX = Math.min(mStartCoords.x, mEndCoords.x);
+                                    const segMaxX = Math.max(mStartCoords.x, mEndCoords.x);
+                                    const segMinY = Math.min(mStartCoords.y, mEndCoords.y);
+                                    const segMaxY = Math.max(mStartCoords.y, mEndCoords.y);
+                                    
+                                    if (segMaxX >= viewLeft && segMinX <= viewRight && segMaxY >= viewTop && segMinY <= viewBottom) {{
+                                        lineVertices.push(mStartCoords.x, mStartCoords.y);
+                                        lineVertices.push(mEndCoords.x, mEndCoords.y);
+                                        lineColors.push(mismatchColor.r, mismatchColor.g, mismatchColor.b, 1.0);
+                                        lineColors.push(mismatchColor.r, mismatchColor.g, mismatchColor.b, 1.0);
+                                    }}
+                                }}
                             }}
                         }} else if (op.type === 'insertion') {{
                             const endCoords = projectCoords(op.x, op.y + op.len);
                             
-                            lineVertices.push(startCoords.x, startCoords.y);
-                            lineVertices.push(endCoords.x, endCoords.y);
-                            lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
-                            lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                            // Check if insertion line intersects viewport
+                            const insMinX = Math.min(startCoords.x, endCoords.x);
+                            const insMaxX = Math.max(startCoords.x, endCoords.x);
+                            const insMinY = Math.min(startCoords.y, endCoords.y);
+                            const insMaxY = Math.max(startCoords.y, endCoords.y);
+                            
+                            if (insMaxX >= viewLeft && insMinX <= viewRight && insMaxY >= viewTop && insMinY <= viewBottom) {{
+                                lineVertices.push(startCoords.x, startCoords.y);
+                                lineVertices.push(endCoords.x, endCoords.y);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                            }}
                         }} else if (op.type === 'deletion') {{
                             const endCoords = projectCoords(op.x + (op.rev ? -op.len : op.len), op.y);
                             
-                            lineVertices.push(startCoords.x, startCoords.y);
-                            lineVertices.push(endCoords.x, endCoords.y);
-                            lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
-                            lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                            // Check if deletion line intersects viewport
+                            const delMinX = Math.min(startCoords.x, endCoords.x);
+                            const delMaxX = Math.max(startCoords.x, endCoords.x);
+                            const delMinY = Math.min(startCoords.y, endCoords.y);
+                            const delMaxY = Math.max(startCoords.y, endCoords.y);
+                            
+                            if (delMaxX >= viewLeft && delMinX <= viewRight && delMaxY >= viewTop && delMinY <= viewBottom) {{
+                                lineVertices.push(startCoords.x, startCoords.y);
+                                lineVertices.push(endCoords.x, endCoords.y);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                            }}
                         }}
                     }});
                 }});
