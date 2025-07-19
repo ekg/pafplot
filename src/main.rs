@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::Path;
+use flate2::read::GzDecoder;
 //use std::cmp;
 
 use boomphf::*;
@@ -18,7 +19,11 @@ extern crate base64;
 
 fn for_each_line_in_file(paf_filename: &str, mut callback: impl FnMut(&str)) {
     let file = File::open(paf_filename).unwrap();
-    let reader = BufReader::new(file);
+    let reader: Box<dyn BufRead> = if paf_filename.ends_with(".gz") {
+        Box::new(BufReader::new(GzDecoder::new(file)))
+    } else {
+        Box::new(BufReader::new(file))
+    };
     for line in reader.lines() {
         callback(&line.unwrap());
     }
