@@ -1,7 +1,7 @@
+use flate2::read::GzDecoder;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 use std::path::Path;
-use flate2::read::GzDecoder;
 //use std::cmp;
 
 use boomphf::*;
@@ -104,7 +104,6 @@ fn paf_target_begin(line: &str) -> usize {
 fn paf_target_end(line: &str) -> usize {
     line.split('\t').nth(8).unwrap().parse::<usize>().unwrap()
 }
-
 
 impl PafFile {
     fn new(filename: &str) -> Self {
@@ -240,13 +239,19 @@ impl PafFile {
         // Compute the fake CIGAR, in case the real one is missing in the line
         let query_len = paf_query_end(line) - paf_query_begin(line);
         let target_len = paf_target_end(line) - paf_target_begin(line);
-        let fake_cigar = format!("{}M", if query_len < target_len { query_len } else { target_len });
+        let fake_cigar = format!(
+            "{}M",
+            if query_len < target_len {
+                query_len
+            } else {
+                target_len
+            }
+        );
         if cigars.is_empty() {
             cigars.push(fake_cigar.as_str());
         }
 
-        for cigar in cigars
-        {
+        for cigar in cigars {
             //println!("{}", cigar);
             let mut first: usize = 0;
             for (i, b) in cigar.bytes().enumerate() {
@@ -254,7 +259,7 @@ impl PafFile {
                 //println!("{} {}", i, b as char);
                 match c {
                     'M' | '=' | 'X' => {
-                        let n = cigar[first..i].parse::<usize>().unwrap() as usize;
+                        let n = cigar[first..i].parse::<usize>().unwrap();
                         func(c, target_pos, query_rev, query_pos, n);
                         query_pos += if query_rev { 0 - n } else { n };
                         target_pos += n;
@@ -292,7 +297,7 @@ impl PafFile {
                 y
             );
              */
-            self.for_each_match(line, |c, x, r, y, d| func(c, x, r, y, d));
+            self.for_each_match(line, &mut func);
             //println!();
         });
     }
@@ -300,10 +305,10 @@ impl PafFile {
         //let max_length = cmp::max(self.query_length, self.target_length) as f64;
         //println!("query = {} target = {}", self.query_length, self.target_length);
         if self.target_length > self.query_length {
-            let ratio = self.query_length as f64 / self.target_length as f64;
+            let ratio = self.query_length / self.target_length;
             (major_axis, (major_axis as f64 * ratio) as usize)
         } else {
-            let ratio = self.target_length as f64 / self.query_length as f64;
+            let ratio = self.target_length / self.query_length;
             ((major_axis as f64 * ratio) as usize, major_axis)
         }
     }
@@ -325,8 +330,8 @@ impl PafFile {
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            axes.0 as f64 * (x as f64 / self.target_length as f64),
-            axes.1 as f64 * (y as f64 / self.query_length as f64),
+            axes.0 as f64 * (x as f64 / self.target_length),
+            axes.1 as f64 * (y as f64 / self.query_length),
         )
     }
     fn project_xy_zoom(
@@ -338,10 +343,8 @@ impl PafFile {
     ) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            axes.0 as f64
-                * (((x as f64) - (zoom.0 .0 as f64)) / ((zoom.0 .1 - zoom.0 .0) as f64)),
-            axes.1 as f64
-                * (((y as f64) - (zoom.1 .0 as f64)) / ((zoom.1 .1 - zoom.1 .0) as f64)),
+            axes.0 as f64 * (((x as f64) - (zoom.0 .0 as f64)) / ((zoom.0 .1 - zoom.0 .0) as f64)),
+            axes.1 as f64 * (((y as f64) - (zoom.1 .0 as f64)) / ((zoom.1 .1 - zoom.1 .0) as f64)),
         )
     }
     /*
@@ -406,11 +409,11 @@ fn main() {
 
     let major_axis = matches
         .value_of("size")
-        .unwrap_or(&"1000")
+        .unwrap_or("1000")
         .parse::<usize>()
         .unwrap();
 
-    let default_output = format!("{}.png", filename);
+    let default_output = format!("{filename}.png");
 
     let output_png = matches.value_of("png").unwrap_or(&default_output);
 
@@ -418,7 +421,6 @@ fn main() {
 
     let using_zoom = matches.is_present("range");
     let (target_range, query_range): ((usize, usize), (usize, usize)) = if using_zoom {
-
         let splitv = matches
             .value_of("range")
             .unwrap()
@@ -471,8 +473,10 @@ fn main() {
             .parse::<usize>()
             .unwrap();
 
-        (paf.target_range(target_name, target_start, target_end),
-         paf.query_range(query_name, query_start, query_end))
+        (
+            paf.target_range(target_name, target_start, target_end),
+            paf.query_range(query_name, query_start, query_end),
+        )
     } else {
         (
             (0, paf.target_length as usize),
@@ -592,7 +596,14 @@ fn main() {
 
     // Generate HTML viewer if requested
     if matches.is_present("html") {
-        generate_html_viewer(&paf, axes, output_png, dark, using_zoom, (target_range, query_range));
+        generate_html_viewer(
+            &paf,
+            axes,
+            output_png,
+            dark,
+            using_zoom,
+            (target_range, query_range),
+        );
     }
 }
 
@@ -601,72 +612,76 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
     let mut detailed_alignments = Vec::new();
     let mut summary_grid = std::collections::HashMap::new();
     let grid_size = 1000; // Grid resolution for summary view
-    
+
     // Collect both simple alignments and detailed CIGAR data
     for_each_line_in_file(&paf.filename, |line| {
         let query_rev = paf_query_is_rev(line);
         let (x, y) = paf.global_start(line, query_rev);
-        
+
         // Store the full alignment for line drawing
         let query_len = paf_query_end(line) - paf_query_begin(line);
         let target_len = paf_target_end(line) - paf_target_begin(line);
-        
+
         alignments.push(format!(
-            r#"{{"x":{},"y":{},"queryLen":{},"targetLen":{},"rev":{}}}"#,
-            x, y, query_len, target_len, query_rev
+            r#"{{"x":{x},"y":{y},"queryLen":{query_len},"targetLen":{target_len},"rev":{query_rev}}}"#
         ));
-        
+
         // Update summary grid
         let grid_x = (x as f64 / paf.target_length * grid_size as f64) as usize;
         let grid_y = (y as f64 / paf.query_length * grid_size as f64) as usize;
         let entry = summary_grid.entry((grid_x, grid_y)).or_insert((0, 0, 0));
         entry.0 += 1;
         entry.1 += query_len.max(target_len); // Use the larger segment length for summary
-        if query_rev { entry.2 += 1; }
-        
+        if query_rev {
+            entry.2 += 1;
+        }
+
         // Collect detailed CIGAR operations for base-level view
         let mut cigar_ops = Vec::new();
-        
+
         paf.for_each_match(line, |c, target_pos, rev, query_pos, len| {
             let op_type = match c {
                 'M' | '=' => "match",
                 'X' => "mismatch",
                 'I' => "insertion",
                 'D' => "deletion",
-                _ => "unknown"
+                _ => "unknown",
             };
-            
+
             cigar_ops.push(format!(
-                r#"{{"type":"{}","x":{},"y":{},"len":{},"rev":{}}}"#,
-                op_type, target_pos, query_pos, len, rev
+                r#"{{"type":"{op_type}","x":{target_pos},"y":{query_pos},"len":{len},"rev":{rev}}}"#
             ));
         });
-        
+
         if !cigar_ops.is_empty() {
             detailed_alignments.push(format!(
                 r#"{{"x":{},"y":{},"queryLen":{},"targetLen":{},"rev":{},"ops":[{}]}}"#,
-                x, y, query_len, target_len, query_rev, cigar_ops.join(",")
+                x,
+                y,
+                query_len,
+                target_len,
+                query_rev,
+                cigar_ops.join(",")
             ));
         }
     });
-    
+
     // Convert summary grid to JSON
     let mut summary_data = Vec::new();
     for ((gx, gy), (count, total_len, rev_count)) in summary_grid {
         let density = count as f64;
         let avg_len = total_len as f64 / count as f64;
         let rev_ratio = rev_count as f64 / count as f64;
-        
+
         summary_data.push(format!(
-            r#"{{"gx":{},"gy":{},"density":{},"avgLen":{},"revRatio":{}}}"#,
-            gx, gy, density, avg_len, rev_ratio
+            r#"{{"gx":{gx},"gy":{gy},"density":{density},"avgLen":{avg_len},"revRatio":{rev_ratio}}}"#
         ));
     }
-    
+
     let alignments_json = format!("[{}]", alignments.join(","));
     let summary_json = format!("[{}]", summary_data.join(","));
     let detailed_json = format!("[{}]", detailed_alignments.join(","));
-    
+
     (alignments_json, summary_json, detailed_json)
 }
 
@@ -684,25 +699,36 @@ fn generate_html_viewer(
     // Generate sequence metadata as JSON
     let mut targets_json = String::from("[");
     for (i, target) in paf.targets.iter().enumerate() {
-        if i > 0 { targets_json.push(','); }
+        if i > 0 {
+            targets_json.push(',');
+        }
         targets_json.push_str(&format!(
             r#"{{"name":"{}","length":{},"rank":{},"offset":{}}}"#,
-            target.name.replace('"', r#"\""#), target.length, target.rank, target.offset
+            target.name.replace('"', r#"\""#),
+            target.length,
+            target.rank,
+            target.offset
         ));
     }
     targets_json.push(']');
 
     let mut queries_json = String::from("[");
     for (i, query) in paf.queries.iter().enumerate() {
-        if i > 0 { queries_json.push(','); }
+        if i > 0 {
+            queries_json.push(',');
+        }
         queries_json.push_str(&format!(
             r#"{{"name":"{}","length":{},"rank":{},"offset":{}}}"#,
-            query.name.replace('"', r#"\""#), query.length, query.rank, query.offset
+            query.name.replace('"', r#"\""#),
+            query.length,
+            query.rank,
+            query.offset
         ));
     }
     queries_json.push(']');
 
-    let html_content = format!(r#"<!DOCTYPE html>
+    let html_content = format!(
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2038,36 +2064,139 @@ fn generate_html_viewer(
         if dark { "#444444" } else { "#cccccc" },
         if dark { "#2a2a2a" } else { "#f5f5f5" },
         if dark { "#444444" } else { "#cccccc" },
-        if dark { "#2a2a2a" } else { "#f5f5f5" },  // config panel background
-        if dark { "#444444" } else { "#cccccc" },  // config panel border
-        if dark { "#2a2a2a" } else { "#f0f0f0" },  // minimap background
-        if dark { "#666666" } else { "#999999" },  // minimap border
-        if dark { "#00ff00" } else { "#0088ff" },  // viewport border
-        if dark { "rgba(0,255,0,0.2)" } else { "rgba(0,136,255,0.2)" },  // viewport fill
+        if dark { "#2a2a2a" } else { "#f5f5f5" }, // config panel background
+        if dark { "#444444" } else { "#cccccc" }, // config panel border
+        if dark { "#2a2a2a" } else { "#f0f0f0" }, // minimap background
+        if dark { "#666666" } else { "#999999" }, // minimap border
+        if dark { "#00ff00" } else { "#0088ff" }, // viewport border
+        if dark {
+            "rgba(0,255,0,0.2)"
+        } else {
+            "rgba(0,136,255,0.2)"
+        }, // viewport fill
         if dark { "#666666" } else { "#999999" },
-        if dark { "rgba(26,26,26,0.8)" } else { "rgba(255,255,255,0.8)" },  // label background
-        if dark { "#1a1a1a" } else { "#ffffff" },  // page background again
-        if dark { "#00ff00" } else { "#0088ff" },  // render mode color
+        if dark {
+            "rgba(26,26,26,0.8)"
+        } else {
+            "rgba(255,255,255,0.8)"
+        }, // label background
+        if dark { "#1a1a1a" } else { "#ffffff" }, // page background again
+        if dark { "#00ff00" } else { "#0088ff" }, // render mode color
         alignments_json,
         summary_json,
         detailed_json,
         targets_json,
         queries_json,
-        if using_zoom { ranges.0.1 - ranges.0.0 } else { paf.target_length as usize },
-        if using_zoom { ranges.1.1 - ranges.1.0 } else { paf.query_length as usize },
+        if using_zoom {
+            ranges.0 .1 - ranges.0 .0
+        } else {
+            paf.target_length as usize
+        },
+        if using_zoom {
+            ranges.1 .1 - ranges.1 .0
+        } else {
+            paf.query_length as usize
+        },
         using_zoom,
-        format!("[{}, {}]", ranges.0.0, ranges.0.1),
-        format!("[{}, {}]", ranges.1.0, ranges.1.1),
+        format!("[{}, {}]", ranges.0 .0, ranges.0 .1),
+        format!("[{}, {}]", ranges.1 .0, ranges.1 .1),
         dark,
     );
 
     let html_filename = if output_filename.ends_with(".png") {
         output_filename.replace(".png", ".html")
     } else {
-        format!("{}.html", output_filename)
+        format!("{output_filename}.html")
     };
-    std::fs::write(&html_filename, html_content)
-        .expect("Failed to write HTML file");
-    
-    println!("Generated interactive HTML viewer: {}", html_filename);
+    std::fs::write(&html_filename, html_content).expect("Failed to write HTML file");
+
+    println!("Generated interactive HTML viewer: {html_filename}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_paf_parsing_functions() {
+        let test_line =
+            "query1\t1000\t100\t900\t+\ttarget1\t2000\t200\t1800\t800\t800\t60\tcg:Z:800M";
+
+        assert_eq!(paf_query(test_line), "query1");
+        assert_eq!(paf_query_length(test_line), 1000);
+        assert_eq!(paf_query_begin(test_line), 100);
+        assert_eq!(paf_query_end(test_line), 900);
+        assert_eq!(paf_query_is_rev(test_line), false);
+
+        assert_eq!(paf_target(test_line), "target1");
+        assert_eq!(paf_target_length(test_line), 2000);
+        assert_eq!(paf_target_begin(test_line), 200);
+        assert_eq!(paf_target_end(test_line), 1800);
+    }
+
+    #[test]
+    fn test_paf_reverse_strand() {
+        let test_line =
+            "query1\t1000\t100\t900\t-\ttarget1\t2000\t200\t1800\t800\t800\t60\tcg:Z:800M";
+        assert_eq!(paf_query_is_rev(test_line), true);
+    }
+
+    #[test]
+    fn test_aligned_seq_creation() {
+        let seq = AlignedSeq::new();
+        assert_eq!(seq.name, "");
+        assert_eq!(seq.length, 0);
+        assert_eq!(seq.rank, 0);
+        assert_eq!(seq.offset, 0);
+    }
+
+    #[test]
+    fn test_coordinate_projection() {
+        // Create a simple test PAF with known dimensions
+        std::fs::write(
+            "test_simple.paf",
+            "query1\t1000\t0\t1000\t+\ttarget1\t2000\t0\t2000\t1000\t1000\t60\tcg:Z:1000M\n",
+        )
+        .expect("Failed to write test file");
+
+        let paf = PafFile::new("test_simple.paf");
+        let axes = (100, 50); // 100x50 canvas
+
+        // Test projection of coordinates
+        let (proj_x, proj_y) = paf.project_xy(1000, 500, axes);
+        assert!((proj_x - 50.0).abs() < 0.1); // Should be roughly half of target axis
+        assert!((proj_y - 25.0).abs() < 0.1); // Should be roughly half of query axis
+
+        // Clean up
+        std::fs::remove_file("test_simple.paf").ok();
+    }
+
+    #[test]
+    fn test_axis_calculation() {
+        std::fs::write(
+            "test_axis.paf",
+            "query1\t1000\t0\t1000\t+\ttarget1\t2000\t0\t2000\t1000\t1000\t60\tcg:Z:1000M\n",
+        )
+        .expect("Failed to write test file");
+
+        let paf = PafFile::new("test_axis.paf");
+        let axes = paf.get_axes(1000);
+
+        // Target is longer than query, so target should get the major axis
+        assert_eq!(axes.0, 1000); // target axis gets major axis
+        assert_eq!(axes.1, 500); // query axis is scaled down proportionally
+
+        std::fs::remove_file("test_axis.paf").ok();
+    }
+
+    #[test]
+    fn test_error_handling_invalid_paf() {
+        // Test handling of malformed PAF lines
+        let invalid_line = "incomplete\tline";
+
+        // These should not panic but may return defaults or handle gracefully
+        // The actual behavior depends on implementation details
+        let result = std::panic::catch_unwind(|| paf_query_length(invalid_line));
+        assert!(result.is_err()); // Should panic on invalid input
+    }
 }
