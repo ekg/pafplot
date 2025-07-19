@@ -605,11 +605,10 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
         // Store the full alignment for line drawing
         let query_len = paf_query_end(line) - paf_query_begin(line);
         let target_len = paf_target_end(line) - paf_target_begin(line);
-        let align_len = std::cmp::min(query_len, target_len);
         
         alignments.push(format!(
-            r#"{{"x":{},"y":{},"len":{},"rev":{}}}"#,
-            x, y, align_len, query_rev
+            r#"{{"x":{},"y":{},"queryLen":{},"targetLen":{},"rev":{}}}"#,
+            x, y, query_len, target_len, query_rev
         ));
         
         // Update summary grid
@@ -617,7 +616,7 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
         let grid_y = (y as f64 / paf.query_length * grid_size as f64) as usize;
         let entry = summary_grid.entry((grid_x, grid_y)).or_insert((0, 0, 0));
         entry.0 += 1;
-        entry.1 += align_len;
+        entry.1 += query_len.max(target_len); // Use the larger segment length for summary
         if query_rev { entry.2 += 1; }
         
         // Collect detailed CIGAR operations for base-level view
@@ -640,8 +639,8 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
         
         if !cigar_ops.is_empty() {
             detailed_alignments.push(format!(
-                r#"{{"x":{},"y":{},"rev":{},"ops":[{}]}}"#,
-                x, y, query_rev, cigar_ops.join(",")
+                r#"{{"x":{},"y":{},"queryLen":{},"targetLen":{},"rev":{},"ops":[{}]}}"#,
+                x, y, query_len, target_len, query_rev, cigar_ops.join(",")
             ));
         }
     });
@@ -1281,8 +1280,8 @@ fn generate_html_viewer(
                     if (renderCount >= maxRenderCount) return;
                     
                     const startCoords = projectCoords(alignment.x, alignment.y);
-                    const endX = alignment.x + alignment.len;
-                    const endY = alignment.y + (alignment.rev ? -alignment.len : alignment.len);
+                    const endX = alignment.x + alignment.targetLen;
+                    const endY = alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen);
                     const endCoords = projectCoords(endX, endY);
                     
                     // Enhanced frustum culling for performance
@@ -1303,7 +1302,49 @@ fn generate_html_viewer(
                 }});
             }} else if (shouldShowDetails && detailedAlignments.length > 0) {{
                 // Mode 2: Detailed CIGAR operations (viewport < 200kbp and details enabled)
+                // Draw gray boxes for each alignment segment first
+                const segmentColor = hexToRgb(darkMode ? '#333333' : '#e0e0e0');
+                
                 detailedAlignments.forEach(alignment => {{
+                    // Draw segment boundary box
+                    const segmentStartCoords = projectCoords(alignment.x, alignment.y);
+                    const segmentEndX = alignment.x + alignment.targetLen;
+                    const segmentEndY = alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen);
+                    const segmentEndCoords = projectCoords(segmentEndX, segmentEndY);
+                    
+                    // Draw box outline (4 lines forming a rectangle)
+                    const boxCorners = [
+                        projectCoords(alignment.x, alignment.y),
+                        projectCoords(alignment.x + alignment.targetLen, alignment.y),
+                        projectCoords(alignment.x + alignment.targetLen, alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen)),
+                        projectCoords(alignment.x, alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen))
+                    ];
+                    
+                    // Top edge
+                    lineVertices.push(boxCorners[0].x, boxCorners[0].y);
+                    lineVertices.push(boxCorners[1].x, boxCorners[1].y);
+                    lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
+                    lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
+                    
+                    // Right edge
+                    lineVertices.push(boxCorners[1].x, boxCorners[1].y);
+                    lineVertices.push(boxCorners[2].x, boxCorners[2].y);
+                    lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
+                    lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
+                    
+                    // Bottom edge
+                    lineVertices.push(boxCorners[2].x, boxCorners[2].y);
+                    lineVertices.push(boxCorners[3].x, boxCorners[3].y);
+                    lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
+                    lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
+                    
+                    // Left edge
+                    lineVertices.push(boxCorners[3].x, boxCorners[3].y);
+                    lineVertices.push(boxCorners[0].x, boxCorners[0].y);
+                    lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
+                    lineColors.push(segmentColor.r, segmentColor.g, segmentColor.b, 0.6);
+                    
+                    // Now draw detailed CIGAR operations within the box
                     alignment.ops.forEach(op => {{
                         const startCoords = projectCoords(op.x, op.y);
                         
@@ -1350,8 +1391,8 @@ fn generate_html_viewer(
                 // Mode 3: Standard alignment lines (200kbp - 2Mbp viewport)
                 alignments.forEach(alignment => {{
                     const startCoords = projectCoords(alignment.x, alignment.y);
-                    const endX = alignment.x + alignment.len;
-                    const endY = alignment.y + (alignment.rev ? -alignment.len : alignment.len);
+                    const endX = alignment.x + alignment.targetLen;
+                    const endY = alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen);
                     const endCoords = projectCoords(endX, endY);
                     
                     // Simple frustum culling
@@ -1527,8 +1568,8 @@ fn generate_html_viewer(
                 minimapCtx.strokeStyle = lineColor;
                 alignments.forEach(alignment => {{
                     const startCoords = projectCoords(alignment.x, alignment.y);
-                    const endX = alignment.x + (alignment.rev ? -alignment.len : alignment.len);
-                    const endY = alignment.y + alignment.len;
+                    const endX = alignment.x + (alignment.rev ? -alignment.targetLen : alignment.targetLen);
+                    const endY = alignment.y + alignment.queryLen;
                     const endCoords = projectCoords(endX, endY);
                     
                     minimapCtx.beginPath();
