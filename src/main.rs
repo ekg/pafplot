@@ -1396,11 +1396,17 @@ fn generate_html_viewer(
                     
                     // Now draw detailed CIGAR operations within the box - with individual viewport culling
                     alignment.ops.forEach(op => {{
-                        const startCoords = projectCoords(op.x, op.y);
+                        // For reverse alignments, we need to transform both X and Y coordinates
+                        // The stored op.y values decrement from alignment.y (query end)
+                        // But to match PNG rendering, we need Y to increment from query start
+                        const opY = op.rev ? (alignment.y - alignment.queryLen + (alignment.y - op.y)) : op.y;
+                        // For reverse alignments, X needs to go backwards from the end
+                        const opX = op.rev ? (alignment.x + alignment.targetLen - (op.x - alignment.x)) : op.x;
+                        const startCoords = projectCoords(opX, opY);
                         
                         if (op.type === 'match' || op.type === 'unknown') {{
-                            const endX = op.x + (op.rev ? -op.len : op.len);
-                            const endY = op.y + op.len;
+                            const endX = opX + (op.rev ? -op.len : op.len);
+                            const endY = opY + op.len;
                             const endCoords = projectCoords(endX, endY);
                             
                             // Check if this match operation intersects the viewport
@@ -1417,8 +1423,8 @@ fn generate_html_viewer(
                             }}
                         }} else if (op.type === 'mismatch') {{
                             // Check if mismatch region intersects viewport before rendering individual segments
-                            const mismatchEndX = op.x + (op.rev ? -op.len : op.len);
-                            const mismatchEndY = op.y + op.len;
+                            const mismatchEndX = opX + (op.rev ? -op.len : op.len);
+                            const mismatchEndY = opY + op.len;
                             const mismatchEndCoords = projectCoords(mismatchEndX, mismatchEndY);
                             
                             const mismatchMinX = Math.min(startCoords.x, mismatchEndCoords.x);
@@ -1430,8 +1436,8 @@ fn generate_html_viewer(
                                 // Draw mismatches as individual segments, but limit count for performance
                                 const maxSegments = Math.min(op.len, 100); // Limit to prevent too many segments
                                 for (let i = 0; i < maxSegments; i++) {{
-                                    const mx = op.x + (op.rev ? -i : i);
-                                    const my = op.y + i;
+                                    const mx = opX + (op.rev ? -i : i);
+                                    const my = opY + i;
                                     const mStartCoords = projectCoords(mx, my);
                                     const mEndCoords = projectCoords(mx + (op.rev ? -1 : 1), my + 1);
                                     
@@ -1450,7 +1456,7 @@ fn generate_html_viewer(
                                 }}
                             }}
                         }} else if (op.type === 'insertion') {{
-                            const endCoords = projectCoords(op.x, op.y + op.len);
+                            const endCoords = projectCoords(opX, opY + op.len);
                             
                             // Check if insertion line intersects viewport
                             const insMinX = Math.min(startCoords.x, endCoords.x);
@@ -1465,7 +1471,7 @@ fn generate_html_viewer(
                                 lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
                             }}
                         }} else if (op.type === 'deletion') {{
-                            const endCoords = projectCoords(op.x + (op.rev ? -op.len : op.len), op.y);
+                            const endCoords = projectCoords(opX + (op.rev ? -op.len : op.len), opY);
                             
                             // Check if deletion line intersects viewport
                             const delMinX = Math.min(startCoords.x, endCoords.x);
