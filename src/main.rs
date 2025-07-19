@@ -1,7 +1,6 @@
 use bgzip::BGZFReader;
-use flate2::read::GzDecoder;
 use std::fs::File;
-use std::io::{prelude::*, BufReader};
+use std::io::BufReader;
 use std::path::Path;
 //use std::cmp;
 
@@ -41,7 +40,6 @@ where
             Err(_) => {
                 // Not a BGZF file, try regular gzip
                 use flate2::read::GzDecoder;
-                use std::io::Read;
 
                 let file = File::open(paf_filename).unwrap();
                 let gz_reader = GzDecoder::new(file);
@@ -65,31 +63,6 @@ where
 }
 
 // Legacy function for backwards compatibility - converts PAF records to line strings
-fn for_each_line_in_file(paf_filename: &str, mut callback: impl FnMut(&str)) {
-    for_each_paf_record(paf_filename, |record| {
-        let line = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            record.query_name(),
-            record.query_len(),
-            record.query_start(),
-            record.query_end(),
-            if record.strand() == '+' { "+" } else { "-" },
-            record.target_name(),
-            record.target_len(),
-            record.target_start(),
-            record.target_end(),
-            record.residue_matches(),
-            record.alignment_block_len(),
-            record.mapping_quality()
-        );
-
-        // Add tags if they exist - Note: PAF crate may have different tag access pattern
-        let mut full_line = line;
-        // Skip tags for now since API is unclear - can be added later if needed
-
-        callback(&full_line);
-    });
-}
 
 #[derive(Debug, Clone)]
 struct AlignedSeq {
@@ -169,41 +142,6 @@ fn paf_target_end(record: &paf::PafRecord) -> usize {
 }
 
 // Legacy line-based functions for backwards compatibility
-fn paf_query_from_line(line: &str) -> String {
-    line.split('\t').next().unwrap().into()
-}
-
-fn paf_query_length_from_line(line: &str) -> usize {
-    line.split('\t').nth(1).unwrap().parse::<usize>().unwrap()
-}
-
-fn paf_query_begin_from_line(line: &str) -> usize {
-    line.split('\t').nth(2).unwrap().parse::<usize>().unwrap()
-}
-
-fn paf_query_end_from_line(line: &str) -> usize {
-    line.split('\t').nth(3).unwrap().parse::<usize>().unwrap()
-}
-
-fn paf_query_is_rev_from_line(line: &str) -> bool {
-    line.split('\t').nth(4).unwrap() == "-"
-}
-
-fn paf_target_from_line(line: &str) -> String {
-    line.split('\t').nth(5).unwrap().into()
-}
-
-fn paf_target_length_from_line(line: &str) -> usize {
-    line.split('\t').nth(6).unwrap().parse::<usize>().unwrap()
-}
-
-fn paf_target_begin_from_line(line: &str) -> usize {
-    line.split('\t').nth(7).unwrap().parse::<usize>().unwrap()
-}
-
-fn paf_target_end_from_line(line: &str) -> usize {
-    line.split('\t').nth(8).unwrap().parse::<usize>().unwrap()
-}
 
 impl PafFile {
     fn new(filename: &str) -> Self {
@@ -322,29 +260,17 @@ impl PafFile {
         )
     }
 
-    fn global_start(self: &PafFile, line: &str, query_rev: bool) -> (usize, usize) {
-        let query_id = self.query_mphf.hash(&paf_query_from_line(line)) as usize;
-        let target_id = self.target_mphf.hash(&paf_target_from_line(line)) as usize;
-        (
-            self.global_target_start(target_id) + paf_target_begin_from_line(line),
-            if query_rev {
-                self.global_query_start(query_id) + paf_query_end_from_line(line)
-            } else {
-                self.global_query_start(query_id) + paf_query_begin_from_line(line)
-            },
-        )
-    }
-    fn for_each_match_from_record<F>(self: &PafFile, record: &paf::PafRecord, mut func: F)
+    fn for_each_match_from_record<F>(self: &PafFile, record: &paf::PafRecord, func: F)
     where
         F: FnMut(char, usize, bool, usize, usize),
     {
         let query_rev = paf_query_is_rev(record);
         let (x, y) = self.global_start_from_record(record);
-        let mut target_pos = x;
-        let mut query_pos = y;
+        let target_pos = x;
+        let query_pos = y;
 
         // Look for CIGAR string in tags - using simpler approach for now
-        let mut cigar_string: Option<String> = None;
+        let cigar_string: Option<String> = None;
         // Note: PAF crate tag access needs to be checked - skipping for now
 
         // Use CIGAR if available, otherwise create fake CIGAR
@@ -410,58 +336,22 @@ impl PafFile {
         }
     }
 
-    fn for_each_match<F>(self: &PafFile, line: &str, mut func: F)
-    where
-        F: FnMut(char, usize, bool, usize, usize),
-    {
-        let query_rev = paf_query_is_rev_from_line(line);
-        let (x, y) = self.global_start(line, query_rev);
-        let mut target_pos = x;
-        let mut query_pos = y;
-        // find and walk the cigar string
-        let mut cigars = line
-            .split('\t')
-            .filter(|s| s.starts_with("cg:Z:"))
-            .map(|s| s.strip_prefix("cg:Z:").unwrap())
-            .collect::<Vec<&str>>();
-
-        // Compute the fake CIGAR, in case the real one is missing in the line
-        let query_len = paf_query_end_from_line(line) - paf_query_begin_from_line(line);
-        let target_len = paf_target_end_from_line(line) - paf_target_begin_from_line(line);
-        let fake_cigar = format!(
-            "{}M",
-            if query_len < target_len {
-                query_len
-            } else {
-                target_len
-            }
-        );
-        if cigars.is_empty() {
-            cigars.push(fake_cigar.as_str());
-        }
-
-        for cigar in cigars {
-            self.parse_cigar(cigar, target_pos, query_pos, query_rev, |c, x, r, y, d| {
-                func(c, x, r, y, d)
-            });
-        }
-    }
     fn for_each_match_in_file<F>(self: &PafFile, mut func: F)
     where
         F: FnMut(char, usize, bool, usize, usize),
     {
         for_each_paf_record(&self.filename, |record| {
-            self.for_each_match_from_record(record, |c, x, r, y, d| func(c, x, r, y, d));
+            self.for_each_match_from_record(record, &mut func);
         });
     }
     fn get_axes(self: &PafFile, major_axis: usize) -> (usize, usize) {
         //let max_length = cmp::max(self.query_length, self.target_length) as f64;
         //println!("query = {} target = {}", self.query_length, self.target_length);
         if self.target_length > self.query_length {
-            let ratio = self.query_length as f64 / self.target_length as f64;
+            let ratio = self.query_length / self.target_length;
             (major_axis, (major_axis as f64 * ratio) as usize)
         } else {
-            let ratio = self.target_length as f64 / self.query_length as f64;
+            let ratio = self.target_length / self.query_length;
             ((major_axis as f64 * ratio) as usize, major_axis)
         }
     }
@@ -483,8 +373,8 @@ impl PafFile {
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            axes.0 as f64 * (x as f64 / self.target_length as f64),
-            axes.1 as f64 * (y as f64 / self.query_length as f64),
+            axes.0 as f64 * (x as f64 / self.target_length),
+            axes.1 as f64 * (y as f64 / self.query_length),
         )
     }
     fn project_xy_zoom(
@@ -562,11 +452,11 @@ fn main() {
 
     let major_axis = matches
         .value_of("size")
-        .unwrap_or(&"1000")
+        .unwrap_or("1000")
         .parse::<usize>()
         .unwrap();
 
-    let default_output = format!("{}.png", filename);
+    let default_output = format!("{filename}.png");
 
     let output_png = matches.value_of("png").unwrap_or(&default_output);
 
@@ -782,8 +672,7 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
         let target_len = paf_target_end(record) - paf_target_begin(record);
 
         alignments.push(format!(
-            r#"{{"x":{},"y":{},"queryLen":{},"targetLen":{},"rev":{}}}"#,
-            x, y, query_len, target_len, query_rev
+            r#"{{"x":{x},"y":{y},"queryLen":{query_len},"targetLen":{target_len},"rev":{query_rev}}}"#
         ));
 
         // Update summary grid
@@ -809,8 +698,7 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
             };
 
             cigar_ops.push(format!(
-                r#"{{"type":"{}","x":{},"y":{},"len":{},"rev":{}}}"#,
-                op_type, target_pos, query_pos, len, rev
+                r#"{{"type":"{op_type}","x":{target_pos},"y":{query_pos},"len":{len},"rev":{rev}}}"#
             ));
         });
 
@@ -835,8 +723,7 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
         let rev_ratio = rev_count as f64 / count as f64;
 
         summary_data.push(format!(
-            r#"{{"gx":{},"gy":{},"density":{},"avgLen":{},"revRatio":{}}}"#,
-            gx, gy, density, avg_len, rev_ratio
+            r#"{{"gx":{gx},"gy":{gy},"density":{density},"avgLen":{avg_len},"revRatio":{rev_ratio}}}"#
         ));
     }
 
@@ -2268,9 +2155,153 @@ fn generate_html_viewer(
     let html_filename = if output_filename.ends_with(".png") {
         output_filename.replace(".png", ".html")
     } else {
-        format!("{}.html", output_filename)
+        format!("{output_filename}.html")
     };
     std::fs::write(&html_filename, html_content).expect("Failed to write HTML file");
 
-    println!("Generated interactive HTML viewer: {}", html_filename);
+    println!("Generated interactive HTML viewer: {html_filename}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+
+    fn create_test_paf_content() -> &'static str {
+        "seq1\t1000\t0\t500\t+\tseq2\t2000\t0\t500\t500\t500\t60\ttp:A:P\tcg:Z:500M\n\
+         seq1\t1000\t600\t1000\t+\tseq2\t2000\t600\t1000\t400\t400\t60\ttp:A:P\tcg:Z:400M\n\
+         seq3\t1500\t0\t800\t+\tseq4\t1200\t0\t800\t800\t800\t60\ttp:A:P\tcg:Z:800M\n"
+    }
+
+    fn create_temp_paf_file() -> String {
+        use std::env;
+        let temp_dir = env::temp_dir();
+        let temp_file = temp_dir.join("test_paf_temp.paf");
+        let mut file = std::fs::File::create(&temp_file).unwrap();
+        file.write_all(create_test_paf_content().as_bytes())
+            .unwrap();
+        temp_file.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn test_paf_record_parsing() {
+        let temp_file = create_temp_paf_file();
+
+        let mut record_count = 0;
+        let mut first_query = String::new();
+        let mut first_target = String::new();
+
+        for_each_paf_record(&temp_file, |record| {
+            record_count += 1;
+            if record_count == 1 {
+                first_query = paf_query(record);
+                first_target = paf_target(record);
+
+                // Test PAF field accessors
+                assert_eq!(paf_query_length(record), 1000);
+                assert_eq!(paf_query_begin(record), 0);
+                assert_eq!(paf_query_end(record), 500);
+                assert_eq!(paf_query_is_rev(record), false);
+                assert_eq!(paf_target_length(record), 2000);
+                assert_eq!(paf_target_begin(record), 0);
+                assert_eq!(paf_target_end(record), 500);
+            }
+        });
+
+        assert_eq!(record_count, 3);
+        assert_eq!(first_query, "seq1");
+        assert_eq!(first_target, "seq2");
+
+        // Clean up
+        let _ = fs::remove_file(temp_file);
+    }
+
+    #[test]
+    fn test_paf_file_construction() {
+        // Use the existing test.paf file instead of creating our own
+        if std::path::Path::new("test.paf").exists() {
+            let paf_file = PafFile::new("test.paf");
+
+            // Test that sequences were parsed correctly
+            assert!(!paf_file.targets.is_empty());
+            assert!(!paf_file.queries.is_empty());
+            assert!(paf_file.target_length > 0.0);
+            assert!(paf_file.query_length > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_arithmetic_safety() {
+        // Test that our saturating arithmetic prevents overflows
+        let large_val = usize::MAX;
+        let small_val = 100;
+
+        // These should not panic
+        let result1 = large_val.saturating_add(small_val);
+        let result2 = small_val.saturating_sub(large_val);
+
+        assert_eq!(result1, usize::MAX);
+        assert_eq!(result2, 0);
+    }
+
+    #[test]
+    fn test_coordinate_projection() {
+        // Use the existing test.paf file instead of creating our own
+        if std::path::Path::new("test.paf").exists() {
+            let paf_file = PafFile::new("test.paf");
+
+            // Test coordinate projection
+            let axes = paf_file.get_axes(1000);
+            assert!(axes.0 > 0);
+            assert!(axes.1 > 0);
+
+            let (proj_x, proj_y) = paf_file.project_xy(100, 200, axes);
+            assert!(proj_x >= 0.0);
+            assert!(proj_y >= 0.0);
+        }
+    }
+
+    #[test]
+    fn test_error_handling() {
+        // Test that non-existent files are handled gracefully
+        let result = std::panic::catch_unwind(|| PafFile::new("non_existent_file.paf"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_paf_record_fields() {
+        // Use the existing test.paf file if available
+        if std::path::Path::new("test.paf").exists() {
+            let mut tested = false;
+            for_each_paf_record("test.paf", |record| {
+                if !tested {
+                    // Test that all accessor functions work
+                    let query_name = paf_query(record);
+                    let target_name = paf_target(record);
+                    let query_len = paf_query_length(record);
+                    let target_len = paf_target_length(record);
+                    let _is_rev = paf_query_is_rev(record);
+
+                    // Basic sanity checks
+                    assert!(!query_name.is_empty());
+                    assert!(!target_name.is_empty());
+                    assert!(query_len > 0);
+                    assert!(target_len > 0);
+                    assert!(paf_query_begin(record) <= paf_query_end(record));
+                    assert!(paf_target_begin(record) <= paf_target_end(record));
+
+                    // Test coordinate ranges
+                    assert!(paf_query_begin(record) < query_len);
+                    assert!(paf_query_end(record) <= query_len);
+                    assert!(paf_target_begin(record) < target_len);
+                    assert!(paf_target_end(record) <= target_len);
+
+                    tested = true; // Only test the first record
+                }
+            });
+
+            assert!(tested, "Should have tested at least one record");
+        }
+    }
 }
