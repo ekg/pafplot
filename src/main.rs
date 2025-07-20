@@ -330,8 +330,8 @@ impl PafFile {
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            axes.0 as f64 * (x as f64 / self.target_length),
-            axes.1 as f64 * (y as f64 / self.query_length),
+            axes.0 as f64 * (x as f64 / self.target_length as f64),
+            axes.1 as f64 * (y as f64 / self.query_length as f64),
         )
     }
     fn project_xy_zoom(
@@ -503,7 +503,7 @@ fn main() {
     } else {
         paf.get_axes(major_axis)
     };
-    //println!("axes = {} {}", axes.0, axes.1);
+    //println!("axes = {} {}, target_length = {}, query_length = {}", axes.0, axes.1, paf.target_length, paf.query_length);
     let mut raw = vec![0u8; axes.0 * axes.1 * 3];
     let pixels = raw.as_rgb_mut();
 
@@ -538,6 +538,46 @@ fn main() {
         }
     };
 
+    // draw border and grid
+    // Draw border first
+    let border_width = 0.5;
+    // Top border
+    let start = get_coords(0, 0);
+    let end = get_coords(paf.target_length as usize, 0);
+    for ((i, j), val) in XiaolinWu::<f64, i64>::new(start, end) {
+        if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
+            let i: usize = (i as usize) + (((axes.1 - 1) - j as usize) * axes.0);
+            pixels[i] = get_color(val * border_width);
+        }
+    }
+    // Right border
+    let start = get_coords(paf.target_length as usize, 0);
+    let end = get_coords(paf.target_length as usize, paf.query_length as usize);
+    for ((i, j), val) in XiaolinWu::<f64, i64>::new(start, end) {
+        if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
+            let i: usize = (i as usize) + (((axes.1 - 1) - j as usize) * axes.0);
+            pixels[i] = get_color(val * border_width);
+        }
+    }
+    // Bottom border
+    let start = get_coords(0, paf.query_length as usize);
+    let end = get_coords(paf.target_length as usize, paf.query_length as usize);
+    for ((i, j), val) in XiaolinWu::<f64, i64>::new(start, end) {
+        if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
+            let i: usize = (i as usize) + (((axes.1 - 1) - j as usize) * axes.0);
+            pixels[i] = get_color(val * border_width);
+        }
+    }
+    // Left border
+    let start = get_coords(0, 0);
+    let end = get_coords(0, paf.query_length as usize);
+    for ((i, j), val) in XiaolinWu::<f64, i64>::new(start, end) {
+        if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
+            let i: usize = (i as usize) + (((axes.1 - 1) - j as usize) * axes.0);
+            pixels[i] = get_color(val * border_width);
+        }
+    }
+    
     // draw our grid
     paf.targets.iter().for_each(|target| {
         if target.offset > 0 {
@@ -569,6 +609,7 @@ fn main() {
         //println!("draw_match {} {} {} {} {}", _c, x, rev, y, len);
         let start = get_coords(x, y);
         let end = get_coords(x + if rev { 0 - len } else { len }, y + len);
+        
         /*
         println!(
             "start and end ({} {}) ({} {})",
