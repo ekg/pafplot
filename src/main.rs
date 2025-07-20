@@ -359,7 +359,7 @@ fn main() {
     let matches = App::new("pafplot")
         .version("0.1.0")
         .author("Erik Garrison <erik.garrison@gmail.com>")
-        .about("Generate a dotplot from pairwise DNA alignments in PAF format")
+        .about("Generate an interactive HTML dotplot viewer from pairwise DNA alignments in PAF format")
         .arg(
             Arg::with_name("INPUT")
                 .required(true)
@@ -369,10 +369,10 @@ fn main() {
         )
         .arg(
             Arg::with_name("png")
-                .takes_value(true)
+                .takes_value(false)
                 .short("p")
                 .long("png")
-                .help("Save the dotplot to this file."),
+                .help("Generate a PNG image output in addition to the default HTML viewer."),
         )
         .arg(
             Arg::with_name("dark")
@@ -400,7 +400,14 @@ fn main() {
                 .takes_value(false)
                 .short("h")
                 .long("html")
-                .help("Generate an interactive HTML viewer with sequence labels and coordinates"),
+                .help("Generate an interactive HTML viewer (default output format)."),
+        )
+        .arg(
+            Arg::with_name("output")
+                .takes_value(true)
+                .short("o")
+                .long("output")
+                .help("Output filename (defaults to input.paf.html). Extension determines format."),
         )
         .get_matches();
 
@@ -413,9 +420,9 @@ fn main() {
         .parse::<usize>()
         .unwrap();
 
-    let default_output = format!("{filename}.png");
-
-    let output_png = matches.value_of("png").unwrap_or(&default_output);
+    let default_output = format!("{filename}.html");
+    
+    let output_filename = matches.value_of("output").unwrap_or(&default_output);
 
     let dark = matches.is_present("dark");
 
@@ -627,25 +634,35 @@ fn main() {
     };
     paf.for_each_match_in_file(draw_match);
 
-    let path = &Path::new(output_png);
+    // Generate PNG if requested
+    let _png_filename = if matches.is_present("png") {
+        // If output filename ends with .html, create a .png version
+        let png_name = if output_filename.ends_with(".html") {
+            output_filename.replace(".html", ".png")
+        } else {
+            format!("{output_filename}.png")
+        };
+        
+        let path = &Path::new(&png_name);
+        // encode_file takes the path to the image, a u8 array,
+        // the width, the height, the color mode, and the bit depth
+        if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8) {
+            panic!("failed to write png: {:?}", e);
+        }
+        png_name
+    } else {
+        String::new()
+    };
 
-    // encode_file takes the path to the image, a u8 array,
-    // the width, the height, the color mode, and the bit depth
-    if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8) {
-        panic!("failed to write png: {:?}", e);
-    }
-
-    // Generate HTML viewer if requested
-    if matches.is_present("html") {
-        generate_html_viewer(
-            &paf,
-            axes,
-            output_png,
-            dark,
-            using_zoom,
-            (target_range, query_range),
-        );
-    }
+    // Always generate HTML viewer (it's the default)
+    generate_html_viewer(
+        &paf,
+        axes,
+        output_filename,
+        dark,
+        using_zoom,
+        (target_range, query_range),
+    );
 }
 
 fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
@@ -2150,7 +2167,9 @@ fn generate_html_viewer(
         dark,
     );
 
-    let html_filename = if output_filename.ends_with(".png") {
+    let html_filename = if output_filename.ends_with(".html") {
+        output_filename.to_string()
+    } else if output_filename.ends_with(".png") {
         output_filename.replace(".png", ".html")
     } else {
         format!("{output_filename}.html")
