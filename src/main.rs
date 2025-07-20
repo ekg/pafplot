@@ -305,10 +305,10 @@ impl PafFile {
         //let max_length = cmp::max(self.query_length, self.target_length) as f64;
         //println!("query = {} target = {}", self.query_length, self.target_length);
         if self.target_length > self.query_length {
-            let ratio = self.query_length / self.target_length;
+            let ratio = self.query_length as f64 / self.target_length as f64;
             (major_axis, (major_axis as f64 * ratio) as usize)
         } else {
-            let ratio = self.target_length / self.query_length;
+            let ratio = self.target_length as f64 / self.query_length as f64;
             ((major_axis as f64 * ratio) as usize, major_axis)
         }
     }
