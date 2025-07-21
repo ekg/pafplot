@@ -282,7 +282,7 @@ impl PafFile {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
                         func(c, target_pos, query_rev, query_pos, n);
-                        query_pos += if query_rev { 0 - n } else { n };
+                        query_pos = if query_rev { query_pos.saturating_sub(n) } else { query_pos + n };
                         target_pos += n;
                         first = i + 1;
                     }
@@ -293,7 +293,7 @@ impl PafFile {
                     }
                     'I' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
-                        query_pos += if query_rev { 0 - n } else { n };
+                        query_pos = if query_rev { query_pos.saturating_sub(n) } else { query_pos + n };
                         first = i + 1;
                     }
                     _ => {}
@@ -726,7 +726,7 @@ fn main() {
     let draw_match = |_c, x: usize, rev: bool, y: usize, len: usize| {
         //println!("draw_match {} {} {} {} {}", _c, x, rev, y, len);
         let start = get_coords(x, y);
-        let end = get_coords(x + if rev { 0 - len } else { len }, y + len);
+        let end = get_coords(x + len, if rev { y.saturating_sub(len) } else { y + len });
         
         /*
         println!(
@@ -1507,6 +1507,9 @@ fn generate_html_viewer(
                 lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
             }});
             
+            // Draw BED regions before alignments so alignments render on top
+            drawBedRegions();
+            
             // Draw alignments - three rendering modes based on viewport size
             const matchColor = hexToRgb(lineColor);
             const mismatchColor = hexToRgb(darkMode ? '#ff4444' : '#cc0000');
@@ -1726,34 +1729,56 @@ fn generate_html_viewer(
         }}
 
         function drawBedRegions() {{
-            // Simple BED rendering - one thick line per region
+            // Simple BED rendering - draw boundary lines
             bedRegions.forEach(region => {{
                 let targetSeq = targets.find(t => t.name === region.chr);
                 let querySeq = queries.find(q => q.name === region.chr);
                 
                 // Use red color for now (we can add color parsing later)
-                const color = {{ r: 1, g: 0, b: 0, a: 0.15 }}; // Very transparent
+                const color = {{ r: 1, g: 0, b: 0, a: 0.3 }};
                 
                 if (targetSeq) {{
-                    // Draw one thick vertical line across the entire region
-                    const centerX = targetSeq.offset + (region.start + region.end) / 2;
-                    const top = projectCoords(centerX, 0);
-                    const bottom = projectCoords(centerX, queryLength);
+                    // Draw vertical lines at region boundaries
+                    const startX = targetSeq.offset + region.start;
+                    const endX = targetSeq.offset + region.end;
                     
-                    lineVertices.push(top.x, top.y);
-                    lineVertices.push(bottom.x, bottom.y);
+                    const startTop = projectCoords(startX, 0);
+                    const startBottom = projectCoords(startX, queryLength);
+                    const endTop = projectCoords(endX, 0);
+                    const endBottom = projectCoords(endX, queryLength);
+                    
+                    // Start boundary
+                    lineVertices.push(startTop.x, startTop.y);
+                    lineVertices.push(startBottom.x, startBottom.y);
+                    lineColors.push(color.r, color.g, color.b, color.a);
+                    lineColors.push(color.r, color.g, color.b, color.a);
+                    
+                    // End boundary
+                    lineVertices.push(endTop.x, endTop.y);
+                    lineVertices.push(endBottom.x, endBottom.y);
                     lineColors.push(color.r, color.g, color.b, color.a);
                     lineColors.push(color.r, color.g, color.b, color.a);
                 }}
                 
                 if (querySeq) {{
-                    // Draw one thick horizontal line across the entire region
-                    const centerY = querySeq.offset + (region.start + region.end) / 2;
-                    const left = projectCoords(0, centerY);
-                    const right = projectCoords(targetLength, centerY);
+                    // Draw horizontal lines at region boundaries
+                    const startY = querySeq.offset + region.start;
+                    const endY = querySeq.offset + region.end;
                     
-                    lineVertices.push(left.x, left.y);
-                    lineVertices.push(right.x, right.y);
+                    const startLeft = projectCoords(0, startY);
+                    const startRight = projectCoords(targetLength, startY);
+                    const endLeft = projectCoords(0, endY);
+                    const endRight = projectCoords(targetLength, endY);
+                    
+                    // Start boundary
+                    lineVertices.push(startLeft.x, startLeft.y);
+                    lineVertices.push(startRight.x, startRight.y);
+                    lineColors.push(color.r, color.g, color.b, color.a);
+                    lineColors.push(color.r, color.g, color.b, color.a);
+                    
+                    // End boundary
+                    lineVertices.push(endLeft.x, endLeft.y);
+                    lineVertices.push(endRight.x, endRight.y);
                     lineColors.push(color.r, color.g, color.b, color.a);
                     lineColors.push(color.r, color.g, color.b, color.a);
                 }}
