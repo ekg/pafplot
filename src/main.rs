@@ -1427,9 +1427,9 @@ fn generate_html_viewer(
             const shouldShowAlignmentSegments = viewportWidthBp > VIEWPORT_THRESHOLD;
             const shouldShowDetails = showDetails && !shouldShowAlignmentSegments && viewportWidthBp < 200000; // Show CIGAR details when zoomed in to 200kb or less
             
-            // Add grid lines (sequence boundaries) - thin gray lines
-            const gridColor = hexToRgb(darkMode ? '#333333' : '#cccccc');
-            const endLineColor = hexToRgb(darkMode ? '#444444' : '#bbbbbb');
+            // Add grid lines (sequence boundaries) - gray like the border
+            const gridColor = hexToRgb(borderColor);
+            const endLineColor = hexToRgb(borderColor);
             
             // Draw plot border
             const borderCoords = [
@@ -1471,8 +1471,8 @@ fn generate_html_viewer(
                     
                     lineVertices.push(coords.x, coords.y);
                     lineVertices.push(endCoords.x, endCoords.y);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
                 }}
                 
                 // Add sequence end lines
@@ -1481,8 +1481,8 @@ fn generate_html_viewer(
                 const endEnd = projectCoords(endX, queryLength);
                 lineVertices.push(endStart.x, endStart.y);
                 lineVertices.push(endEnd.x, endEnd.y);
-                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
-                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, 1.0);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, 1.0);
             }});
             
             // Query boundaries (horizontal lines)
@@ -1493,8 +1493,8 @@ fn generate_html_viewer(
                     
                     lineVertices.push(coords.x, coords.y);
                     lineVertices.push(endCoords.x, endCoords.y);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
                 }}
                 
                 // Add sequence end lines
@@ -1503,8 +1503,8 @@ fn generate_html_viewer(
                 const endEnd = projectCoords(targetLength, endY);
                 lineVertices.push(endStart.x, endStart.y);
                 lineVertices.push(endEnd.x, endEnd.y);
-                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
-                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, 1.0);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, 1.0);
             }});
             
             // Draw BED regions before alignments so alignments render on top
@@ -1734,8 +1734,8 @@ fn generate_html_viewer(
                 let targetSeq = targets.find(t => t.name === region.chr);
                 let querySeq = queries.find(q => q.name === region.chr);
                 
-                // Use white/light color for mapping regions
-                const color = {{ r: darkMode ? 0.2 : 1.0, g: darkMode ? 0.2 : 1.0, b: darkMode ? 0.2 : 1.0, a: 0.4 }};
+                // Use red color for BED regions (we can add color parsing later)
+                const color = {{ r: 1, g: 0, b: 0, a: 0.4 }};
                 
                 if (targetSeq) {{
                     // Draw filled vertical rectangle for target sequence
