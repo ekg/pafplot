@@ -1,13 +1,12 @@
 # pafplot
 
-A base-level sequence alignment rasterizer / dotplot generator
+An interactive HTML dotplot viewer and rasterizer for sequence alignments
 
 ## overview
 
 In the process of generating alignments between whole genomes, we often need to understand the base-level alignment between particular sequences.
-`pafplot` allows us to do so by rasterizing the matches alignment set.
-It draws a line on a raster image to represent each match found in a set of alignments.
-The resulting image provides a high-level view of the structure of the alignments, and in consequence the homology relationships between the sequences in consideration.
+`pafplot` creates interactive HTML visualizations and static PNG images from PAF (Pairwise Alignment Format) files.
+It renders each alignment match as a line, providing a high-level view of the structure of the alignments and the homology relationships between sequences.
 
 ## installation
 
@@ -23,26 +22,76 @@ cargo install --force --path .
 
 Generate alignments with the cigar string attached to the `cg:Z:` tag.
 These can be made by several aligners, including `minimap2 -c`, `wfmash`, or `lastz --format=paf:wfmash`.
-With alignments in `aln.paf`, we would render a plot in `aln.paf.png` using this call:
 
+### Default HTML output
+
+By default, `pafplot` generates an interactive HTML viewer:
+
+```bash
+pafplot aln.paf  # Creates aln.paf.html
 ```
+
+### Interactive HTML viewer features
+
+The HTML viewer provides a rich, interactive experience with:
+
+- **Zoom and pan**: 
+  - Scroll wheel to zoom toward mouse position
+  - Left-click and drag to pan around the plot
+  - Right-click and drag to zoom into a specific region
+- **Sequence labels**: Target sequences displayed below the plot, query sequences on the right
+- **Coordinate tooltips**: Real-time coordinate display following the mouse cursor
+- **Color-coded alignments**: Forward matches in blue/cyan, reverse matches in red/magenta
+- **Performance optimization**: Level-of-detail rendering for smooth interaction with large datasets
+- **Dark/light themes**: Automatically matches the theme specified with `-d, --dark`
+- **Self-contained**: No external dependencies, works offline
+
+### Command-line options
+
+```bash
+# Generate HTML only (default)
 pafplot aln.paf
+
+# Generate both HTML and PNG
+pafplot -p aln.paf
+
+# Specify custom output filename
+pafplot -o output.html aln.paf
+
+# Dark theme
+pafplot -d aln.paf
+
+# Custom size (affects both PNG and HTML canvas)
+pafplot -s 2000 aln.paf
+
+# Combine options
+pafplot -p -d -s 1500 -o custom.html aln.paf
 ```
 
-The scale of the plot can be changed with the `-s, --size` parameter.
-We supply the number of pixels in the longest axis of the rendering.
-It's also possible to specify a different output raster image with `-p, --png`.
+### Output specifications
 
-Queries are ordered by length on the y-axis, while targets are ordered by length on the x-axis.
-The plot is white on black, with grey lines delinating sequence boundaries.
-These colors may be inverted for a dark theme by adding the `-d, --dark` parameter.
+- **Sequence ordering**: Queries are ordered by length on the y-axis, targets on the x-axis
+- **Visual style**: Default is black on white, with grey lines delimiting sequence boundaries
+- **Dark theme**: Use `-d, --dark` for white on black rendering
+
+### Complete options reference
+
+| Option | Short | Description | Default |
+|--------|-------|-------------|---------|
+| INPUT | | Input PAF file (required) | - |
+| --output | -o | Output filename | input.paf.html |
+| --png | -p | Generate PNG image output | false (HTML only) |
+| --dark | -d | Use dark theme (white on black) | false |
+| --size | -s | Major axis size in pixels | 1000 |
+| --range | -r | Zoom to specific range (buggy) | - |
+| --html | -h | Generate HTML viewer | true (default) |
+| --help | | Display help information | - |
 
 ## considerations / bugs
 
-`pafplot` should support zooming functionality, but currently the `-r, --range` parameter has a bug.
-The raster image would benefit from sequence name labels, but these are currently not implemented.
-As the order is given by the input sequence lengths, it is possible to manually determine the query and target identities.
-But, when considering a single pair of sequences, it is often easiest to filter the input alignments down to those between the pair of sequences in question.
+- The `-r, --range` parameter for command-line zooming has a known bug
+- The HTML viewer provides full interactive zooming and sequence labels, addressing limitations of the static PNG output
+- When focusing on specific sequence pairs, pre-filtering the PAF file to those sequences may provide clearer visualization
 
 ## author
 
