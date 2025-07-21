@@ -52,6 +52,27 @@ impl AlignedSeq {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BedRegion {
+    chr: String,
+    start: usize,
+    end: usize,
+    name: Option<String>,
+    color: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BedpeRegion {
+    chr1: String,
+    start1: usize,
+    end1: usize,
+    chr2: String,
+    start2: usize,
+    end2: usize,
+    name: Option<String>,
+    color: Option<String>,
+}
+
 struct PafFile {
     // our input file
     filename: String,
@@ -355,6 +376,63 @@ impl PafFile {
     */
 }
 
+fn parse_bed_file(filename: &str) -> Vec<BedRegion> {
+    let mut regions = Vec::new();
+    for_each_line_in_file(filename, |line| {
+        if line.starts_with('#') || line.is_empty() {
+            return;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 3 {
+            let chr = parts[0].to_string();
+            let start = parts[1].parse::<usize>().unwrap_or(0);
+            let end = parts[2].parse::<usize>().unwrap_or(0);
+            let name = if parts.len() > 3 && !parts[3].is_empty() {
+                Some(parts[3].to_string())
+            } else {
+                None
+            };
+            let color = if parts.len() > 4 && !parts[4].is_empty() {
+                Some(parts[4].to_string())
+            } else {
+                None
+            };
+            regions.push(BedRegion { chr, start, end, name, color });
+        }
+    });
+    regions
+}
+
+fn parse_bedpe_file(filename: &str) -> Vec<BedpeRegion> {
+    let mut regions = Vec::new();
+    for_each_line_in_file(filename, |line| {
+        if line.starts_with('#') || line.is_empty() {
+            return;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 6 {
+            let chr1 = parts[0].to_string();
+            let start1 = parts[1].parse::<usize>().unwrap_or(0);
+            let end1 = parts[2].parse::<usize>().unwrap_or(0);
+            let chr2 = parts[3].to_string();
+            let start2 = parts[4].parse::<usize>().unwrap_or(0);
+            let end2 = parts[5].parse::<usize>().unwrap_or(0);
+            let name = if parts.len() > 6 && !parts[6].is_empty() {
+                Some(parts[6].to_string())
+            } else {
+                None
+            };
+            let color = if parts.len() > 7 && !parts[7].is_empty() {
+                Some(parts[7].to_string())
+            } else {
+                None
+            };
+            regions.push(BedpeRegion { chr1, start1, end1, chr2, start2, end2, name, color });
+        }
+    });
+    regions
+}
+
 fn main() {
     let matches = App::new("pafplot")
         .version("0.1.0")
@@ -409,6 +487,20 @@ fn main() {
                 .long("output")
                 .help("Output filename (defaults to input.paf.html). Extension determines format."),
         )
+        .arg(
+            Arg::with_name("bed")
+                .takes_value(true)
+                .multiple(true)
+                .long("bed")
+                .help("BED file(s) for marking regions as semi-transparent overlays"),
+        )
+        .arg(
+            Arg::with_name("bedpe")
+                .takes_value(true)
+                .multiple(true)
+                .long("bedpe")
+                .help("BEDPE file(s) for marking 2D ranges as semi-transparent overlays"),
+        )
         .get_matches();
 
     let filename = matches.value_of("INPUT").unwrap();
@@ -425,6 +517,25 @@ fn main() {
     let output_filename = matches.value_of("output").unwrap_or(&default_output);
 
     let dark = matches.is_present("dark");
+
+    // Parse BED and BEDPE files
+    let bed_regions: Vec<BedRegion> = matches
+        .values_of("bed")
+        .map(|files| {
+            files
+                .flat_map(|file| parse_bed_file(file))
+                .collect()
+        })
+        .unwrap_or_else(Vec::new);
+
+    let bedpe_regions: Vec<BedpeRegion> = matches
+        .values_of("bedpe")
+        .map(|files| {
+            files
+                .flat_map(|file| parse_bedpe_file(file))
+                .collect()
+        })
+        .unwrap_or_else(Vec::new);
 
     let using_zoom = matches.is_present("range");
     let (target_range, query_range): ((usize, usize), (usize, usize)) = if using_zoom {
@@ -662,6 +773,8 @@ fn main() {
         dark,
         using_zoom,
         (target_range, query_range),
+        &bed_regions,
+        &bedpe_regions,
     );
 }
 
@@ -750,6 +863,8 @@ fn generate_html_viewer(
     dark: bool,
     using_zoom: bool,
     ranges: ((usize, usize), (usize, usize)),
+    bed_regions: &[BedRegion],
+    bedpe_regions: &[BedpeRegion],
 ) {
     // Collect alignment data for canvas rendering
     let (alignments_json, summary_json, detailed_json) = collect_alignment_data(paf);
@@ -784,6 +899,43 @@ fn generate_html_viewer(
         ));
     }
     queries_json.push(']');
+
+    // Convert BED regions to JSON
+    let mut bed_json = String::from("[");
+    for (i, region) in bed_regions.iter().enumerate() {
+        if i > 0 {
+            bed_json.push(',');
+        }
+        bed_json.push_str(&format!(
+            r#"{{"chr":"{}","start":{},"end":{},"name":{},"color":{}}}"#,
+            region.chr,
+            region.start,
+            region.end,
+            region.name.as_ref().map(|n| format!(r#""{}""#, n)).unwrap_or_else(|| "null".to_string()),
+            region.color.as_ref().map(|c| format!(r#""{}""#, c)).unwrap_or_else(|| "null".to_string())
+        ));
+    }
+    bed_json.push(']');
+
+    // Convert BEDPE regions to JSON  
+    let mut bedpe_json = String::from("[");
+    for (i, region) in bedpe_regions.iter().enumerate() {
+        if i > 0 {
+            bedpe_json.push(',');
+        }
+        bedpe_json.push_str(&format!(
+            r#"{{"chr1":"{}","start1":{},"end1":{},"chr2":"{}","start2":{},"end2":{},"name":{},"color":{}}}"#,
+            region.chr1,
+            region.start1,
+            region.end1,
+            region.chr2,
+            region.start2,
+            region.end2,
+            region.name.as_ref().map(|n| format!(r#""{}""#, n)).unwrap_or_else(|| "null".to_string()),
+            region.color.as_ref().map(|c| format!(r#""{}""#, c)).unwrap_or_else(|| "null".to_string())
+        ));
+    }
+    bedpe_json.push(']');
 
     let html_content = format!(
         r#"<!DOCTYPE html>
@@ -1033,6 +1185,8 @@ fn generate_html_viewer(
         const detailedAlignments = {};
         const targets = {};
         const queries = {};
+        const bedRegions = {};
+        const bedpeRegions = {};
         let canvasWidth = window.innerWidth;
         let canvasHeight = window.innerHeight;
         const targetLength = {};
@@ -1568,6 +1722,42 @@ fn generate_html_viewer(
                     }}
                 }});
             }}
+            
+        }}
+
+        function drawBedRegions() {{
+            // Simple BED rendering - one thick line per region
+            bedRegions.forEach(region => {{
+                let targetSeq = targets.find(t => t.name === region.chr);
+                let querySeq = queries.find(q => q.name === region.chr);
+                
+                // Use red color for now (we can add color parsing later)
+                const color = {{ r: 1, g: 0, b: 0, a: 0.15 }}; // Very transparent
+                
+                if (targetSeq) {{
+                    // Draw one thick vertical line across the entire region
+                    const centerX = targetSeq.offset + (region.start + region.end) / 2;
+                    const top = projectCoords(centerX, 0);
+                    const bottom = projectCoords(centerX, queryLength);
+                    
+                    lineVertices.push(top.x, top.y);
+                    lineVertices.push(bottom.x, bottom.y);
+                    lineColors.push(color.r, color.g, color.b, color.a);
+                    lineColors.push(color.r, color.g, color.b, color.a);
+                }}
+                
+                if (querySeq) {{
+                    // Draw one thick horizontal line across the entire region
+                    const centerY = querySeq.offset + (region.start + region.end) / 2;
+                    const left = projectCoords(0, centerY);
+                    const right = projectCoords(targetLength, centerY);
+                    
+                    lineVertices.push(left.x, left.y);
+                    lineVertices.push(right.x, right.y);
+                    lineColors.push(color.r, color.g, color.b, color.a);
+                    lineColors.push(color.r, color.g, color.b, color.a);
+                }}
+            }});
         }}
         
         function drawPlot() {{
@@ -2151,6 +2341,8 @@ fn generate_html_viewer(
         detailed_json,
         targets_json,
         queries_json,
+        bed_json,
+        bedpe_json,
         if using_zoom {
             ranges.0 .1 - ranges.0 .0
         } else {
