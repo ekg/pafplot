@@ -1427,9 +1427,9 @@ fn generate_html_viewer(
             const shouldShowAlignmentSegments = viewportWidthBp > VIEWPORT_THRESHOLD;
             const shouldShowDetails = showDetails && !shouldShowAlignmentSegments && viewportWidthBp < 200000; // Show CIGAR details when zoomed in to 200kb or less
             
-            // Add grid lines (sequence boundaries)
-            const gridColor = hexToRgb(borderColor);
-            const endLineColor = hexToRgb(darkMode ? '#666666' : '#999999');
+            // Add grid lines (sequence boundaries) - thin gray lines
+            const gridColor = hexToRgb(darkMode ? '#333333' : '#cccccc');
+            const endLineColor = hexToRgb(darkMode ? '#444444' : '#bbbbbb');
             
             // Draw plot border
             const borderCoords = [
@@ -1729,58 +1729,54 @@ fn generate_html_viewer(
         }}
 
         function drawBedRegions() {{
-            // Simple BED rendering - draw boundary lines
+            // BED rendering - draw filled rectangles
             bedRegions.forEach(region => {{
                 let targetSeq = targets.find(t => t.name === region.chr);
                 let querySeq = queries.find(q => q.name === region.chr);
                 
-                // Use red color for now (we can add color parsing later)
-                const color = {{ r: 1, g: 0, b: 0, a: 0.3 }};
+                // Use white/light color for mapping regions
+                const color = {{ r: darkMode ? 0.2 : 1.0, g: darkMode ? 0.2 : 1.0, b: darkMode ? 0.2 : 1.0, a: 0.4 }};
                 
                 if (targetSeq) {{
-                    // Draw vertical lines at region boundaries
+                    // Draw filled vertical rectangle for target sequence
                     const startX = targetSeq.offset + region.start;
                     const endX = targetSeq.offset + region.end;
                     
-                    const startTop = projectCoords(startX, 0);
-                    const startBottom = projectCoords(startX, queryLength);
-                    const endTop = projectCoords(endX, 0);
-                    const endBottom = projectCoords(endX, queryLength);
+                    // Calculate step size based on both zoom and base pair coverage
+                    // At high zoom, use base pair resolution; at low zoom, use pixel resolution
+                    const currentViewport = calculateViewportInfo();
+                    const bpPerPixel = currentViewport.viewportWidthBp / canvasWidth;
+                    const stepSize = Math.min(Math.max(1, Math.floor(bpPerPixel)), Math.max(1, (endX - startX) / 1000));
                     
-                    // Start boundary
-                    lineVertices.push(startTop.x, startTop.y);
-                    lineVertices.push(startBottom.x, startBottom.y);
-                    lineColors.push(color.r, color.g, color.b, color.a);
-                    lineColors.push(color.r, color.g, color.b, color.a);
-                    
-                    // End boundary
-                    lineVertices.push(endTop.x, endTop.y);
-                    lineVertices.push(endBottom.x, endBottom.y);
-                    lineColors.push(color.r, color.g, color.b, color.a);
-                    lineColors.push(color.r, color.g, color.b, color.a);
+                    for (let x = startX; x <= endX; x += stepSize) {{
+                        const top = projectCoords(x, 0);
+                        const bottom = projectCoords(x, queryLength);
+                        lineVertices.push(top.x, top.y);
+                        lineVertices.push(bottom.x, bottom.y);
+                        lineColors.push(color.r, color.g, color.b, color.a);
+                        lineColors.push(color.r, color.g, color.b, color.a);
+                    }}
                 }}
                 
                 if (querySeq) {{
-                    // Draw horizontal lines at region boundaries
+                    // Draw filled horizontal rectangle for query sequence
                     const startY = querySeq.offset + region.start;
                     const endY = querySeq.offset + region.end;
                     
-                    const startLeft = projectCoords(0, startY);
-                    const startRight = projectCoords(targetLength, startY);
-                    const endLeft = projectCoords(0, endY);
-                    const endRight = projectCoords(targetLength, endY);
+                    // Calculate step size based on both zoom and base pair coverage
+                    // At high zoom, use base pair resolution; at low zoom, use pixel resolution
+                    const currentViewport = calculateViewportInfo();
+                    const bpPerPixel = currentViewport.viewportWidthBp / canvasWidth;
+                    const stepSize = Math.min(Math.max(1, Math.floor(bpPerPixel)), Math.max(1, (endY - startY) / 1000));
                     
-                    // Start boundary
-                    lineVertices.push(startLeft.x, startLeft.y);
-                    lineVertices.push(startRight.x, startRight.y);
-                    lineColors.push(color.r, color.g, color.b, color.a);
-                    lineColors.push(color.r, color.g, color.b, color.a);
-                    
-                    // End boundary
-                    lineVertices.push(endLeft.x, endLeft.y);
-                    lineVertices.push(endRight.x, endRight.y);
-                    lineColors.push(color.r, color.g, color.b, color.a);
-                    lineColors.push(color.r, color.g, color.b, color.a);
+                    for (let y = startY; y <= endY; y += stepSize) {{
+                        const left = projectCoords(0, y);
+                        const right = projectCoords(targetLength, y);
+                        lineVertices.push(left.x, left.y);
+                        lineVertices.push(right.x, right.y);
+                        lineColors.push(color.r, color.g, color.b, color.a);
+                        lineColors.push(color.r, color.g, color.b, color.a);
+                    }}
                 }}
             }});
         }}
