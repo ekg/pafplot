@@ -1,12 +1,14 @@
 # pafplot
 
-An interactive HTML dotplot viewer and rasterizer for sequence alignments
+An interactive HTML dotplot viewer and rasterizer for sequence alignments with genomic region overlay support
 
 ## overview
 
 In the process of generating alignments between whole genomes, we often need to understand the base-level alignment between particular sequences.
 `pafplot` creates interactive HTML visualizations and static PNG images from PAF (Pairwise Alignment Format) files.
 It renders each alignment match as a line, providing a high-level view of the structure of the alignments and the homology relationships between sequences.
+
+Additionally, `pafplot` supports overlaying genomic regions from BED and BEDPE files as semi-transparent annotations, allowing you to visualize how specific genomic features relate to alignment patterns.
 
 ## installation
 
@@ -52,8 +54,11 @@ The HTML viewer provides a rich, interactive experience with:
 # Generate HTML only (default)
 pafplot aln.paf
 
-# Generate both HTML and PNG
+# Generate PNG only
 pafplot -p aln.paf
+
+# Generate both HTML and PNG
+pafplot -p -h aln.paf
 
 # Specify custom output filename
 pafplot -o output.html aln.paf
@@ -64,8 +69,46 @@ pafplot -d aln.paf
 # Custom size (affects both PNG and HTML canvas)
 pafplot -s 2000 aln.paf
 
-# Combine options
-pafplot -p -d -s 1500 -o custom.html aln.paf
+# BED file overlays
+pafplot --bed regions.bed aln.paf
+
+# Multiple BED files
+pafplot --bed file1.bed --bed file2.bed aln.paf
+
+# BEDPE paired region overlays
+pafplot --bedpe pairs.bedpe aln.paf
+
+# Combine all options
+pafplot -p -h -d -s 1500 --bed regions.bed --bedpe pairs.bedpe -o custom.html aln.paf
+```
+
+### BED and BEDPE overlay support
+
+`pafplot` can overlay genomic regions from BED and BEDPE files as semi-transparent annotations:
+
+#### BED format support
+- **Standard BED columns**: `chr start end [name] [score] [strand] [thickStart] [thickEnd] [itemRgb]`
+- **Minimum required**: `chr start end`
+- **Color support**: Uses `itemRgb` column if present, otherwise generates colors based on region name
+- **Rendering**: BED regions appear as filled rectangles spanning the genomic coordinates
+- **Multiple files**: Use multiple `--bed` flags to overlay regions from different files
+
+#### BEDPE format support  
+- **Standard BEDPE columns**: `chr1 start1 end1 chr2 start2 end2 [name] [score] [strand1] [strand2] [itemRgb]`
+- **Minimum required**: `chr1 start1 end1 chr2 start2 end2`
+- **Rendering**: BEDPE regions appear as 2D rectangles connecting paired genomic coordinates
+- **Use case**: Perfect for visualizing structural variants, Hi-C contacts, or other paired genomic features
+
+#### Example BED/BEDPE usage
+```bash
+# Overlay gene annotations
+pafplot --bed genes.bed genome_alignment.paf
+
+# Overlay repeat regions and structural variants
+pafplot --bed repeats.bed --bedpe structural_variants.bedpe alignment.paf
+
+# Complex visualization with custom styling
+pafplot -d -s 2000 --bed exons.bed --bed introns.bed --bedpe inversions.bedpe -o detailed.html genome.paf
 ```
 
 ### Output specifications
@@ -80,11 +123,13 @@ pafplot -p -d -s 1500 -o custom.html aln.paf
 |--------|-------|-------------|---------|
 | INPUT | | Input PAF file (required) | - |
 | --output | -o | Output filename | input.paf.html |
-| --png | -p | Generate PNG image output | false (HTML only) |
+| --png | -p | Generate PNG image output only | false (HTML default) |
+| --html | -h | Generate HTML viewer (use with -p for both) | true when no -p |
 | --dark | -d | Use dark theme (white on black) | false |
 | --size | -s | Major axis size in pixels | 1000 |
 | --range | -r | Zoom to specific range (buggy) | - |
-| --html | -h | Generate HTML viewer | true (default) |
+| --bed | | BED file(s) for region overlays (multiple allowed) | none |
+| --bedpe | | BEDPE file(s) for paired region overlays (multiple allowed) | none |
 | --help | | Display help information | - |
 
 ## considerations / bugs
@@ -92,6 +137,9 @@ pafplot -p -d -s 1500 -o custom.html aln.paf
 - The `-r, --range` parameter for command-line zooming has a known bug
 - The HTML viewer provides full interactive zooming and sequence labels, addressing limitations of the static PNG output
 - When focusing on specific sequence pairs, pre-filtering the PAF file to those sequences may provide clearer visualization
+- BED/BEDPE overlays render behind alignment data to avoid obscuring the alignments
+- Color parsing from BED `itemRgb` fields is planned but not yet implemented
+- BEDPE rectangle rendering is planned but not yet implemented (currently only BED regions work)
 
 ## author
 
