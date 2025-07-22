@@ -282,7 +282,11 @@ impl PafFile {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
                         func(c, target_pos, query_rev, query_pos, n);
-                        query_pos = if query_rev { query_pos.saturating_sub(n) } else { query_pos + n };
+                        query_pos = if query_rev {
+                            query_pos.saturating_sub(n)
+                        } else {
+                            query_pos + n
+                        };
                         target_pos += n;
                         first = i + 1;
                     }
@@ -293,7 +297,11 @@ impl PafFile {
                     }
                     'I' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
-                        query_pos = if query_rev { query_pos.saturating_sub(n) } else { query_pos + n };
+                        query_pos = if query_rev {
+                            query_pos.saturating_sub(n)
+                        } else {
+                            query_pos + n
+                        };
                         first = i + 1;
                     }
                     _ => {}
@@ -326,10 +334,10 @@ impl PafFile {
         //let max_length = cmp::max(self.query_length, self.target_length) as f64;
         //println!("query = {} target = {}", self.query_length, self.target_length);
         if self.target_length > self.query_length {
-            let ratio = self.query_length as f64 / self.target_length as f64;
+            let ratio = self.query_length / self.target_length;
             (major_axis, (major_axis as f64 * ratio) as usize)
         } else {
-            let ratio = self.target_length as f64 / self.query_length as f64;
+            let ratio = self.target_length / self.query_length;
             ((major_axis as f64 * ratio) as usize, major_axis)
         }
     }
@@ -351,8 +359,8 @@ impl PafFile {
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            axes.0 as f64 * (x as f64 / self.target_length as f64),
-            axes.1 as f64 * (y as f64 / self.query_length as f64),
+            axes.0 as f64 * (x as f64 / self.target_length),
+            axes.1 as f64 * (y as f64 / self.query_length),
         )
     }
     fn project_xy_zoom(
@@ -397,7 +405,13 @@ fn parse_bed_file(filename: &str) -> Vec<BedRegion> {
             } else {
                 None
             };
-            regions.push(BedRegion { chr, start, end, name, color });
+            regions.push(BedRegion {
+                chr,
+                start,
+                end,
+                name,
+                color,
+            });
         }
     });
     regions
@@ -427,7 +441,16 @@ fn parse_bedpe_file(filename: &str) -> Vec<BedpeRegion> {
             } else {
                 None
             };
-            regions.push(BedpeRegion { chr1, start1, end1, chr2, start2, end2, name, color });
+            regions.push(BedpeRegion {
+                chr1,
+                start1,
+                end1,
+                chr2,
+                start2,
+                end2,
+                name,
+                color,
+            });
         }
     });
     regions
@@ -513,7 +536,7 @@ fn main() {
         .unwrap();
 
     let default_output = format!("{filename}.html");
-    
+
     let output_filename = matches.value_of("output").unwrap_or(&default_output);
 
     let dark = matches.is_present("dark");
@@ -521,21 +544,13 @@ fn main() {
     // Parse BED and BEDPE files
     let bed_regions: Vec<BedRegion> = matches
         .values_of("bed")
-        .map(|files| {
-            files
-                .flat_map(|file| parse_bed_file(file))
-                .collect()
-        })
-        .unwrap_or_else(Vec::new);
+        .map(|files| files.flat_map(parse_bed_file).collect())
+        .unwrap_or_default();
 
     let bedpe_regions: Vec<BedpeRegion> = matches
         .values_of("bedpe")
-        .map(|files| {
-            files
-                .flat_map(|file| parse_bedpe_file(file))
-                .collect()
-        })
-        .unwrap_or_else(Vec::new);
+        .map(|files| files.flat_map(parse_bedpe_file).collect())
+        .unwrap_or_default();
 
     let using_zoom = matches.is_present("range");
     let (target_range, query_range): ((usize, usize), (usize, usize)) = if using_zoom {
@@ -695,7 +710,7 @@ fn main() {
             pixels[i] = get_color(val * border_width);
         }
     }
-    
+
     // draw our grid
     paf.targets.iter().for_each(|target| {
         if target.offset > 0 {
@@ -727,7 +742,7 @@ fn main() {
         //println!("draw_match {} {} {} {} {}", _c, x, rev, y, len);
         let start = get_coords(x, y);
         let end = get_coords(x + len, if rev { y.saturating_sub(len) } else { y + len });
-        
+
         /*
         println!(
             "start and end ({} {}) ({} {})",
@@ -753,11 +768,12 @@ fn main() {
         } else {
             format!("{output_filename}.png")
         };
-        
+
         let path = &Path::new(&png_name);
         // encode_file takes the path to the image, a u8 array,
         // the width, the height, the color mode, and the bit depth
-        if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8) {
+        if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8)
+        {
             panic!("failed to write png: {:?}", e);
         }
         png_name
@@ -913,13 +929,21 @@ fn generate_html_viewer(
             region.chr,
             region.start,
             region.end,
-            region.name.as_ref().map(|n| format!(r#""{}""#, n)).unwrap_or_else(|| "null".to_string()),
-            region.color.as_ref().map(|c| format!(r#""{}""#, c)).unwrap_or_else(|| "null".to_string())
+            region
+                .name
+                .as_ref()
+                .map(|n| format!(r#""{n}""#))
+                .unwrap_or_else(|| "null".to_string()),
+            region
+                .color
+                .as_ref()
+                .map(|c| format!(r#""{c}""#))
+                .unwrap_or_else(|| "null".to_string())
         ));
     }
     bed_json.push(']');
 
-    // Convert BEDPE regions to JSON  
+    // Convert BEDPE regions to JSON
     let mut bedpe_json = String::from("[");
     for (i, region) in bedpe_regions.iter().enumerate() {
         if i > 0 {
@@ -933,8 +957,8 @@ fn generate_html_viewer(
             region.chr2,
             region.start2,
             region.end2,
-            region.name.as_ref().map(|n| format!(r#""{}""#, n)).unwrap_or_else(|| "null".to_string()),
-            region.color.as_ref().map(|c| format!(r#""{}""#, c)).unwrap_or_else(|| "null".to_string())
+            region.name.as_ref().map(|n| format!(r#""{n}""#)).unwrap_or_else(|| "null".to_string()),
+            region.color.as_ref().map(|c| format!(r#""{c}""#)).unwrap_or_else(|| "null".to_string())
         ));
     }
     bedpe_json.push(']');
