@@ -765,17 +765,19 @@ fn main() {
         String::new()
     };
 
-    // Always generate HTML viewer (it's the default)
-    generate_html_viewer(
-        &paf,
-        axes,
-        output_filename,
-        dark,
-        using_zoom,
-        (target_range, query_range),
-        &bed_regions,
-        &bedpe_regions,
-    );
+    // Generate HTML viewer unless only PNG was requested
+    if !matches.is_present("png") || matches.is_present("html") {
+        generate_html_viewer(
+            &paf,
+            axes,
+            output_filename,
+            dark,
+            using_zoom,
+            (target_range, query_range),
+            &bed_regions,
+            &bedpe_regions,
+        );
+    }
 }
 
 fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
