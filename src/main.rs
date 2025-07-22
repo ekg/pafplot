@@ -734,7 +734,7 @@ fn main() {
             start.0, start.1, end.0, end.1
         );
          */
-        for ((j, i), val) in XiaolinWu::<f64, i64>::new(start, end) {
+        for ((i, j), val) in XiaolinWu::<f64, i64>::new(start, end) {
             //println!("checking pixel {} {} {}", i, j, val);
             if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
                 //println!("drawing pixel {} {} {}", i, j, val);
