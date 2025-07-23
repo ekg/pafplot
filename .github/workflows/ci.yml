@@ -101,8 +101,8 @@ jobs:
     - name: Build
       run: cargo build --release
     - name: Test with regular PAF file
-      run: ./target/release/pafplot test.paf -s 100
+      run: ./target/release/pafplot tests/b-3106.paf -s 100
     - name: Test HTML generation
       run: |
-        ./target/release/pafplot test.paf -h -s 100
-        test -f test.paf.html
+        ./target/release/pafplot tests/b-3106.paf -h -s 100
+        test -f b-3106.paf.html
