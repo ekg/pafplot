@@ -1546,12 +1546,31 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
             
             if (shouldShowAlignmentSegments) {{
                 // Mode 1: Alignment segments view (viewport > 2Mbp)
-                // Draw simplified segments with reduced opacity for performance
-                let renderCount = 0;
-                const maxRenderCount = 100000; // Increased limit to prevent hiding at top zoom
+                // Random sparsification for performance at extreme zoom levels
+                let alignmentsToRender = alignments;
+                const targetRenderCount = 100000; // Target number of alignments to render
                 
-                alignments.forEach(alignment => {{
-                    if (renderCount >= maxRenderCount) return;
+                if (alignments.length > targetRenderCount) {{
+                    // Calculate sampling probability
+                    const sampleProbability = targetRenderCount / alignments.length;
+                    
+                    // Deterministic sparsification based on alignment hash
+                    alignmentsToRender = alignments.filter(alignment => {{
+                        // Create a simple hash from alignment features
+                        const hashStr = `${{alignment.x}}_${{alignment.y}}_${{alignment.targetLen}}_${{alignment.queryLen}}_${{alignment.rev}}`;
+                        let hash = 0;
+                        for (let i = 0; i < hashStr.length; i++) {{
+                            const char = hashStr.charCodeAt(i);
+                            hash = ((hash << 5) - hash) + char;
+                            hash = hash & hash; // Convert to 32-bit integer
+                        }}
+                        // Use hash to deterministically decide if this alignment should be rendered
+                        const normalizedHash = (Math.abs(hash) % 1000000) / 1000000;
+                        return normalizedHash < sampleProbability;
+                    }});
+                }}
+                
+                alignmentsToRender.forEach(alignment => {{
                     
                     const startCoords = projectCoords(alignment.x, alignment.y);
                     const endX = alignment.x + alignment.targetLen;
@@ -1574,7 +1593,6 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
                         lineVertices.push(endCoords.x, endCoords.y);
                         lineColors.push(summaryColor.r, summaryColor.g, summaryColor.b, alpha);
                         lineColors.push(summaryColor.r, summaryColor.g, summaryColor.b, alpha);
-                        renderCount++;
                     }}
                 }});
             }} else if (shouldShowDetails && detailedAlignments.length > 0) {{
