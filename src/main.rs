@@ -783,16 +783,16 @@ fn main() {
 
     // Generate HTML viewer unless only PNG was requested
     if !matches.is_present("png") || matches.is_present("html") {
-        generate_html_viewer(
-            &paf,
-            axes,
+        generate_html_viewer(HtmlViewerConfig {
+            paf: &paf,
+            _axes: axes,
             output_filename,
             dark,
             using_zoom,
-            (target_range, query_range),
-            &bed_regions,
-            &bedpe_regions,
-        );
+            ranges: (target_range, query_range),
+            bed_regions: &bed_regions,
+            bedpe_regions: &bedpe_regions,
+        });
     }
 }
 
@@ -874,22 +874,24 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
     (alignments_json, summary_json, detailed_json)
 }
 
-fn generate_html_viewer(
-    paf: &PafFile,
+struct HtmlViewerConfig<'a> {
+    paf: &'a PafFile,
     _axes: (usize, usize),
-    output_filename: &str,
+    output_filename: &'a str,
     dark: bool,
     using_zoom: bool,
     ranges: ((usize, usize), (usize, usize)),
-    bed_regions: &[BedRegion],
-    bedpe_regions: &[BedpeRegion],
-) {
+    bed_regions: &'a [BedRegion],
+    bedpe_regions: &'a [BedpeRegion],
+}
+
+fn generate_html_viewer(config: HtmlViewerConfig) {
     // Collect alignment data for canvas rendering
-    let (alignments_json, summary_json, detailed_json) = collect_alignment_data(paf);
+    let (alignments_json, summary_json, detailed_json) = collect_alignment_data(config.paf);
 
     // Generate sequence metadata as JSON
     let mut targets_json = String::from("[");
-    for (i, target) in paf.targets.iter().enumerate() {
+    for (i, target) in config.paf.targets.iter().enumerate() {
         if i > 0 {
             targets_json.push(',');
         }
@@ -904,7 +906,7 @@ fn generate_html_viewer(
     targets_json.push(']');
 
     let mut queries_json = String::from("[");
-    for (i, query) in paf.queries.iter().enumerate() {
+    for (i, query) in config.paf.queries.iter().enumerate() {
         if i > 0 {
             queries_json.push(',');
         }
@@ -920,7 +922,7 @@ fn generate_html_viewer(
 
     // Convert BED regions to JSON
     let mut bed_json = String::from("[");
-    for (i, region) in bed_regions.iter().enumerate() {
+    for (i, region) in config.bed_regions.iter().enumerate() {
         if i > 0 {
             bed_json.push(',');
         }
@@ -945,7 +947,7 @@ fn generate_html_viewer(
 
     // Convert BEDPE regions to JSON
     let mut bedpe_json = String::from("[");
-    for (i, region) in bedpe_regions.iter().enumerate() {
+    for (i, region) in config.bedpe_regions.iter().enumerate() {
         if i > 0 {
             bedpe_json.push(',');
         }
@@ -2359,30 +2361,30 @@ fn generate_html_viewer(
     </script>
 </body>
 </html>"#,
-        output_filename,
-        if dark { "#1a1a1a" } else { "#ffffff" },
-        if dark { "#ffffff" } else { "#000000" },
-        if dark { "#444444" } else { "#cccccc" },
-        if dark { "#2a2a2a" } else { "#f5f5f5" },
-        if dark { "#444444" } else { "#cccccc" },
-        if dark { "#2a2a2a" } else { "#f5f5f5" }, // config panel background
-        if dark { "#444444" } else { "#cccccc" }, // config panel border
-        if dark { "#2a2a2a" } else { "#f0f0f0" }, // minimap background
-        if dark { "#666666" } else { "#999999" }, // minimap border
-        if dark { "#00ff00" } else { "#0088ff" }, // viewport border
-        if dark {
+        config.output_filename,
+        if config.dark { "#1a1a1a" } else { "#ffffff" },
+        if config.dark { "#ffffff" } else { "#000000" },
+        if config.dark { "#444444" } else { "#cccccc" },
+        if config.dark { "#2a2a2a" } else { "#f5f5f5" },
+        if config.dark { "#444444" } else { "#cccccc" },
+        if config.dark { "#2a2a2a" } else { "#f5f5f5" }, // config panel background
+        if config.dark { "#444444" } else { "#cccccc" }, // config panel border
+        if config.dark { "#2a2a2a" } else { "#f0f0f0" }, // minimap background
+        if config.dark { "#666666" } else { "#999999" }, // minimap border
+        if config.dark { "#00ff00" } else { "#0088ff" }, // viewport border
+        if config.dark {
             "rgba(0,255,0,0.2)"
         } else {
             "rgba(0,136,255,0.2)"
         }, // viewport fill
-        if dark { "#666666" } else { "#999999" },
-        if dark {
+        if config.dark { "#666666" } else { "#999999" },
+        if config.dark {
             "rgba(26,26,26,0.8)"
         } else {
             "rgba(255,255,255,0.8)"
         }, // label background
-        if dark { "#1a1a1a" } else { "#ffffff" }, // page background again
-        if dark { "#00ff00" } else { "#0088ff" }, // render mode color
+        if config.dark { "#1a1a1a" } else { "#ffffff" }, // page background again
+        if config.dark { "#00ff00" } else { "#0088ff" }, // render mode color
         alignments_json,
         summary_json,
         detailed_json,
@@ -2390,28 +2392,28 @@ fn generate_html_viewer(
         queries_json,
         bed_json,
         bedpe_json,
-        if using_zoom {
-            ranges.0 .1 - ranges.0 .0
+        if config.using_zoom {
+            config.ranges.0 .1 - config.ranges.0 .0
         } else {
-            paf.target_length as usize
+            config.paf.target_length as usize
         },
-        if using_zoom {
-            ranges.1 .1 - ranges.1 .0
+        if config.using_zoom {
+            config.ranges.1 .1 - config.ranges.1 .0
         } else {
-            paf.query_length as usize
+            config.paf.query_length as usize
         },
-        using_zoom,
-        format!("[{}, {}]", ranges.0 .0, ranges.0 .1),
-        format!("[{}, {}]", ranges.1 .0, ranges.1 .1),
-        dark,
+        config.using_zoom,
+        format!("[{}, {}]", config.ranges.0 .0, config.ranges.0 .1),
+        format!("[{}, {}]", config.ranges.1 .0, config.ranges.1 .1),
+        config.dark,
     );
 
-    let html_filename = if output_filename.ends_with(".html") {
-        output_filename.to_string()
-    } else if output_filename.ends_with(".png") {
-        output_filename.replace(".png", ".html")
+    let html_filename = if config.output_filename.ends_with(".html") {
+        config.output_filename.to_string()
+    } else if config.output_filename.ends_with(".png") {
+        config.output_filename.replace(".png", ".html")
     } else {
-        format!("{output_filename}.html")
+        format!("{}.html", config.output_filename)
     };
     std::fs::write(&html_filename, html_content).expect("Failed to write HTML file");
 
