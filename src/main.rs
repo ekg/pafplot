@@ -965,6 +965,7 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
     }
     bedpe_json.push(']');
 
+    #[allow(clippy::format_in_format_args)]
     let html_content = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -2456,7 +2457,7 @@ mod tests {
         assert_eq!(paf_query_length(test_line), 1000);
         assert_eq!(paf_query_begin(test_line), 100);
         assert_eq!(paf_query_end(test_line), 900);
-        assert_eq!(paf_query_is_rev(test_line), false);
+        assert!(!paf_query_is_rev(test_line));
 
         assert_eq!(paf_target(test_line), "target1");
         assert_eq!(paf_target_length(test_line), 2000);
@@ -2468,7 +2469,7 @@ mod tests {
     fn test_paf_reverse_strand() {
         let test_line =
             "query1\t1000\t100\t900\t-\ttarget1\t2000\t200\t1800\t800\t800\t60\tcg:Z:800M";
-        assert_eq!(paf_query_is_rev(test_line), true);
+        assert!(paf_query_is_rev(test_line));
     }
 
     #[test]
