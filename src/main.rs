@@ -1565,8 +1565,8 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
                     const maxY = Math.max(startCoords.y, endCoords.y);
                     
                     if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
-                        // Use lower opacity for performance and visual clarity at this scale
-                        const alpha = Math.min(0.7, 1.0 / Math.sqrt(viewportWidthBp / 2000000));
+                        // Use consistent high opacity for visibility at all zoom levels
+                        const alpha = 0.9;
                         lineVertices.push(startCoords.x, startCoords.y);
                         lineVertices.push(endCoords.x, endCoords.y);
                         lineColors.push(summaryColor.r, summaryColor.g, summaryColor.b, alpha);
@@ -1710,8 +1710,8 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
                             if (insMaxX >= viewLeft && insMinX <= viewRight && insMaxY >= viewTop && insMinY <= viewBottom) {{
                                 lineVertices.push(startCoords.x, startCoords.y);
                                 lineVertices.push(endCoords.x, endCoords.y);
-                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
-                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.9);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.9);
                             }}
                         }} else if (op.type === 'deletion') {{
                             const endCoords = projectCoords(opX + (op.rev ? -op.len : op.len), opY);
@@ -1725,8 +1725,8 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
                             if (delMaxX >= viewLeft && delMinX <= viewRight && delMaxY >= viewTop && delMinY <= viewBottom) {{
                                 lineVertices.push(startCoords.x, startCoords.y);
                                 lineVertices.push(endCoords.x, endCoords.y);
-                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
-                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.9);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.9);
                             }}
                         }}
                     }});
@@ -1748,8 +1748,8 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
                     if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
                         lineVertices.push(startCoords.x, startCoords.y);
                         lineVertices.push(endCoords.x, endCoords.y);
-                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
-                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
+                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
+                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
                     }}
                 }});
             }}
