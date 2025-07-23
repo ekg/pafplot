@@ -105,4 +105,4 @@ jobs:
     - name: Test HTML generation
       run: |
         ./target/release/pafplot tests/b-3106.paf -h -s 100
-        test -f b-3106.paf.html
+        test -f tests/b-3106.paf.html
