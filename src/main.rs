@@ -1548,7 +1548,7 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
                 // Mode 1: Alignment segments view (viewport > 2Mbp)
                 // Draw simplified segments with reduced opacity for performance
                 let renderCount = 0;
-                const maxRenderCount = 10000; // Limit rendering for extreme performance
+                const maxRenderCount = 100000; // Increased limit to prevent hiding at top zoom
                 
                 alignments.forEach(alignment => {{
                     if (renderCount >= maxRenderCount) return;
@@ -1558,13 +1558,16 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
                     const endY = alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen);
                     const endCoords = projectCoords(endX, endY);
                     
-                    // Enhanced frustum culling for performance
+                    // Enhanced frustum culling with margin for edge cases
                     const minX = Math.min(startCoords.x, endCoords.x);
                     const maxX = Math.max(startCoords.x, endCoords.x);
                     const minY = Math.min(startCoords.y, endCoords.y);
                     const maxY = Math.max(startCoords.y, endCoords.y);
                     
-                    if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
+                    // Add margin to prevent edge case culling issues
+                    const margin = 100; // pixels
+                    if (maxX >= viewLeft - margin && minX <= viewRight + margin && 
+                        maxY >= viewTop - margin && minY <= viewBottom + margin) {{
                         // Use consistent high opacity for visibility at all zoom levels
                         const alpha = 0.9;
                         lineVertices.push(startCoords.x, startCoords.y);
@@ -1739,13 +1742,15 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
                     const endY = alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen);
                     const endCoords = projectCoords(endX, endY);
                     
-                    // Simple frustum culling
+                    // Frustum culling with margin
                     const minX = Math.min(startCoords.x, endCoords.x);
                     const maxX = Math.max(startCoords.x, endCoords.x);
                     const minY = Math.min(startCoords.y, endCoords.y);
                     const maxY = Math.max(startCoords.y, endCoords.y);
                     
-                    if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
+                    const margin = 100; // pixels
+                    if (maxX >= viewLeft - margin && minX <= viewRight + margin && 
+                        maxY >= viewTop - margin && minY <= viewBottom + margin) {{
                         lineVertices.push(startCoords.x, startCoords.y);
                         lineVertices.push(endCoords.x, endCoords.y);
                         lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
