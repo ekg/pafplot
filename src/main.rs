@@ -52,6 +52,27 @@ impl AlignedSeq {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BedRegion {
+    chr: String,
+    start: usize,
+    end: usize,
+    name: Option<String>,
+    color: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BedpeRegion {
+    chr1: String,
+    start1: usize,
+    end1: usize,
+    chr2: String,
+    start2: usize,
+    end2: usize,
+    name: Option<String>,
+    color: Option<String>,
+}
+
 struct PafFile {
     // our input file
     filename: String,
@@ -261,7 +282,11 @@ impl PafFile {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
                         func(c, target_pos, query_rev, query_pos, n);
-                        query_pos += if query_rev { 0 - n } else { n };
+                        query_pos = if query_rev {
+                            query_pos.saturating_sub(n)
+                        } else {
+                            query_pos + n
+                        };
                         target_pos += n;
                         first = i + 1;
                     }
@@ -272,7 +297,11 @@ impl PafFile {
                     }
                     'I' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
-                        query_pos += if query_rev { 0 - n } else { n };
+                        query_pos = if query_rev {
+                            query_pos.saturating_sub(n)
+                        } else {
+                            query_pos + n
+                        };
                         first = i + 1;
                     }
                     _ => {}
@@ -305,10 +334,10 @@ impl PafFile {
         //let max_length = cmp::max(self.query_length, self.target_length) as f64;
         //println!("query = {} target = {}", self.query_length, self.target_length);
         if self.target_length > self.query_length {
-            let ratio = self.query_length as f64 / self.target_length as f64;
+            let ratio = self.query_length / self.target_length;
             (major_axis, (major_axis as f64 * ratio) as usize)
         } else {
-            let ratio = self.target_length as f64 / self.query_length as f64;
+            let ratio = self.target_length / self.query_length;
             ((major_axis as f64 * ratio) as usize, major_axis)
         }
     }
@@ -330,8 +359,8 @@ impl PafFile {
     fn project_xy(self: &PafFile, x: usize, y: usize, axes: (usize, usize)) -> (f64, f64) {
         //println!("axes {} {}", axes.0, axes.1);
         (
-            axes.0 as f64 * (x as f64 / self.target_length as f64),
-            axes.1 as f64 * (y as f64 / self.query_length as f64),
+            axes.0 as f64 * (x as f64 / self.target_length),
+            axes.1 as f64 * (y as f64 / self.query_length),
         )
     }
     fn project_xy_zoom(
@@ -353,6 +382,78 @@ impl PafFile {
             x * (self.query_length / q as f64).round() as usize * q + y * (self.target_length / t as f64).round() as usize
         }
     */
+}
+
+fn parse_bed_file(filename: &str) -> Vec<BedRegion> {
+    let mut regions = Vec::new();
+    for_each_line_in_file(filename, |line| {
+        if line.starts_with('#') || line.is_empty() {
+            return;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 3 {
+            let chr = parts[0].to_string();
+            let start = parts[1].parse::<usize>().unwrap_or(0);
+            let end = parts[2].parse::<usize>().unwrap_or(0);
+            let name = if parts.len() > 3 && !parts[3].is_empty() {
+                Some(parts[3].to_string())
+            } else {
+                None
+            };
+            let color = if parts.len() > 4 && !parts[4].is_empty() {
+                Some(parts[4].to_string())
+            } else {
+                None
+            };
+            regions.push(BedRegion {
+                chr,
+                start,
+                end,
+                name,
+                color,
+            });
+        }
+    });
+    regions
+}
+
+fn parse_bedpe_file(filename: &str) -> Vec<BedpeRegion> {
+    let mut regions = Vec::new();
+    for_each_line_in_file(filename, |line| {
+        if line.starts_with('#') || line.is_empty() {
+            return;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 6 {
+            let chr1 = parts[0].to_string();
+            let start1 = parts[1].parse::<usize>().unwrap_or(0);
+            let end1 = parts[2].parse::<usize>().unwrap_or(0);
+            let chr2 = parts[3].to_string();
+            let start2 = parts[4].parse::<usize>().unwrap_or(0);
+            let end2 = parts[5].parse::<usize>().unwrap_or(0);
+            let name = if parts.len() > 6 && !parts[6].is_empty() {
+                Some(parts[6].to_string())
+            } else {
+                None
+            };
+            let color = if parts.len() > 7 && !parts[7].is_empty() {
+                Some(parts[7].to_string())
+            } else {
+                None
+            };
+            regions.push(BedpeRegion {
+                chr1,
+                start1,
+                end1,
+                chr2,
+                start2,
+                end2,
+                name,
+                color,
+            });
+        }
+    });
+    regions
 }
 
 fn main() {
@@ -409,6 +510,20 @@ fn main() {
                 .long("output")
                 .help("Output filename (defaults to input.paf.html). Extension determines format."),
         )
+        .arg(
+            Arg::with_name("bed")
+                .takes_value(true)
+                .multiple(true)
+                .long("bed")
+                .help("BED file(s) for marking regions as semi-transparent overlays"),
+        )
+        .arg(
+            Arg::with_name("bedpe")
+                .takes_value(true)
+                .multiple(true)
+                .long("bedpe")
+                .help("BEDPE file(s) for marking 2D ranges as semi-transparent overlays"),
+        )
         .get_matches();
 
     let filename = matches.value_of("INPUT").unwrap();
@@ -421,10 +536,21 @@ fn main() {
         .unwrap();
 
     let default_output = format!("{filename}.html");
-    
+
     let output_filename = matches.value_of("output").unwrap_or(&default_output);
 
     let dark = matches.is_present("dark");
+
+    // Parse BED and BEDPE files
+    let bed_regions: Vec<BedRegion> = matches
+        .values_of("bed")
+        .map(|files| files.flat_map(parse_bed_file).collect())
+        .unwrap_or_default();
+
+    let bedpe_regions: Vec<BedpeRegion> = matches
+        .values_of("bedpe")
+        .map(|files| files.flat_map(parse_bedpe_file).collect())
+        .unwrap_or_default();
 
     let using_zoom = matches.is_present("range");
     let (target_range, query_range): ((usize, usize), (usize, usize)) = if using_zoom {
@@ -584,7 +710,7 @@ fn main() {
             pixels[i] = get_color(val * border_width);
         }
     }
-    
+
     // draw our grid
     paf.targets.iter().for_each(|target| {
         if target.offset > 0 {
@@ -615,15 +741,15 @@ fn main() {
     let draw_match = |_c, x: usize, rev: bool, y: usize, len: usize| {
         //println!("draw_match {} {} {} {} {}", _c, x, rev, y, len);
         let start = get_coords(x, y);
-        let end = get_coords(x + if rev { 0 - len } else { len }, y + len);
-        
+        let end = get_coords(x + len, if rev { y.saturating_sub(len) } else { y + len });
+
         /*
         println!(
             "start and end ({} {}) ({} {})",
             start.0, start.1, end.0, end.1
         );
          */
-        for ((j, i), val) in XiaolinWu::<f64, i64>::new(start, end) {
+        for ((i, j), val) in XiaolinWu::<f64, i64>::new(start, end) {
             //println!("checking pixel {} {} {}", i, j, val);
             if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
                 //println!("drawing pixel {} {} {}", i, j, val);
@@ -642,11 +768,12 @@ fn main() {
         } else {
             format!("{output_filename}.png")
         };
-        
+
         let path = &Path::new(&png_name);
         // encode_file takes the path to the image, a u8 array,
         // the width, the height, the color mode, and the bit depth
-        if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8) {
+        if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8)
+        {
             panic!("failed to write png: {:?}", e);
         }
         png_name
@@ -654,15 +781,19 @@ fn main() {
         String::new()
     };
 
-    // Always generate HTML viewer (it's the default)
-    generate_html_viewer(
-        &paf,
-        axes,
-        output_filename,
-        dark,
-        using_zoom,
-        (target_range, query_range),
-    );
+    // Generate HTML viewer unless only PNG was requested
+    if !matches.is_present("png") || matches.is_present("html") {
+        generate_html_viewer(HtmlViewerConfig {
+            paf: &paf,
+            _axes: axes,
+            output_filename,
+            dark,
+            using_zoom,
+            ranges: (target_range, query_range),
+            bed_regions: &bed_regions,
+            bedpe_regions: &bedpe_regions,
+        });
+    }
 }
 
 fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
@@ -743,20 +874,24 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
     (alignments_json, summary_json, detailed_json)
 }
 
-fn generate_html_viewer(
-    paf: &PafFile,
+struct HtmlViewerConfig<'a> {
+    paf: &'a PafFile,
     _axes: (usize, usize),
-    output_filename: &str,
+    output_filename: &'a str,
     dark: bool,
     using_zoom: bool,
     ranges: ((usize, usize), (usize, usize)),
-) {
+    bed_regions: &'a [BedRegion],
+    bedpe_regions: &'a [BedpeRegion],
+}
+
+fn generate_html_viewer(config: HtmlViewerConfig) {
     // Collect alignment data for canvas rendering
-    let (alignments_json, summary_json, detailed_json) = collect_alignment_data(paf);
+    let (alignments_json, summary_json, detailed_json) = collect_alignment_data(config.paf);
 
     // Generate sequence metadata as JSON
     let mut targets_json = String::from("[");
-    for (i, target) in paf.targets.iter().enumerate() {
+    for (i, target) in config.paf.targets.iter().enumerate() {
         if i > 0 {
             targets_json.push(',');
         }
@@ -771,7 +906,7 @@ fn generate_html_viewer(
     targets_json.push(']');
 
     let mut queries_json = String::from("[");
-    for (i, query) in paf.queries.iter().enumerate() {
+    for (i, query) in config.paf.queries.iter().enumerate() {
         if i > 0 {
             queries_json.push(',');
         }
@@ -785,6 +920,52 @@ fn generate_html_viewer(
     }
     queries_json.push(']');
 
+    // Convert BED regions to JSON
+    let mut bed_json = String::from("[");
+    for (i, region) in config.bed_regions.iter().enumerate() {
+        if i > 0 {
+            bed_json.push(',');
+        }
+        bed_json.push_str(&format!(
+            r#"{{"chr":"{}","start":{},"end":{},"name":{},"color":{}}}"#,
+            region.chr,
+            region.start,
+            region.end,
+            region
+                .name
+                .as_ref()
+                .map(|n| format!(r#""{n}""#))
+                .unwrap_or_else(|| "null".to_string()),
+            region
+                .color
+                .as_ref()
+                .map(|c| format!(r#""{c}""#))
+                .unwrap_or_else(|| "null".to_string())
+        ));
+    }
+    bed_json.push(']');
+
+    // Convert BEDPE regions to JSON
+    let mut bedpe_json = String::from("[");
+    for (i, region) in config.bedpe_regions.iter().enumerate() {
+        if i > 0 {
+            bedpe_json.push(',');
+        }
+        bedpe_json.push_str(&format!(
+            r#"{{"chr1":"{}","start1":{},"end1":{},"chr2":"{}","start2":{},"end2":{},"name":{},"color":{}}}"#,
+            region.chr1,
+            region.start1,
+            region.end1,
+            region.chr2,
+            region.start2,
+            region.end2,
+            region.name.as_ref().map(|n| format!(r#""{n}""#)).unwrap_or_else(|| "null".to_string()),
+            region.color.as_ref().map(|c| format!(r#""{c}""#)).unwrap_or_else(|| "null".to_string())
+        ));
+    }
+    bedpe_json.push(']');
+
+    #[allow(clippy::format_in_format_args)]
     let html_content = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -1033,6 +1214,8 @@ fn generate_html_viewer(
         const detailedAlignments = {};
         const targets = {};
         const queries = {};
+        const bedRegions = {};
+        const bedpeRegions = {};
         let canvasWidth = window.innerWidth;
         let canvasHeight = window.innerHeight;
         const targetLength = {};
@@ -1273,9 +1456,9 @@ fn generate_html_viewer(
             const shouldShowAlignmentSegments = viewportWidthBp > VIEWPORT_THRESHOLD;
             const shouldShowDetails = showDetails && !shouldShowAlignmentSegments && viewportWidthBp < 200000; // Show CIGAR details when zoomed in to 200kb or less
             
-            // Add grid lines (sequence boundaries)
+            // Add grid lines (sequence boundaries) - gray like the border
             const gridColor = hexToRgb(borderColor);
-            const endLineColor = hexToRgb(darkMode ? '#666666' : '#999999');
+            const endLineColor = hexToRgb(borderColor);
             
             // Draw plot border
             const borderCoords = [
@@ -1317,8 +1500,8 @@ fn generate_html_viewer(
                     
                     lineVertices.push(coords.x, coords.y);
                     lineVertices.push(endCoords.x, endCoords.y);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
                 }}
                 
                 // Add sequence end lines
@@ -1327,8 +1510,8 @@ fn generate_html_viewer(
                 const endEnd = projectCoords(endX, queryLength);
                 lineVertices.push(endStart.x, endStart.y);
                 lineVertices.push(endEnd.x, endEnd.y);
-                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
-                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, 1.0);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, 1.0);
             }});
             
             // Query boundaries (horizontal lines)
@@ -1339,8 +1522,8 @@ fn generate_html_viewer(
                     
                     lineVertices.push(coords.x, coords.y);
                     lineVertices.push(endCoords.x, endCoords.y);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
-                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, gridOpacity);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
+                    lineColors.push(gridColor.r, gridColor.g, gridColor.b, 1.0);
                 }}
                 
                 // Add sequence end lines
@@ -1349,9 +1532,12 @@ fn generate_html_viewer(
                 const endEnd = projectCoords(targetLength, endY);
                 lineVertices.push(endStart.x, endStart.y);
                 lineVertices.push(endEnd.x, endEnd.y);
-                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
-                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, gridOpacity * 0.7);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, 1.0);
+                lineColors.push(endLineColor.r, endLineColor.g, endLineColor.b, 1.0);
             }});
+            
+            // Draw BED regions before alignments so alignments render on top
+            drawBedRegions();
             
             // Draw alignments - three rendering modes based on viewport size
             const matchColor = hexToRgb(lineColor);
@@ -1361,32 +1547,53 @@ fn generate_html_viewer(
             
             if (shouldShowAlignmentSegments) {{
                 // Mode 1: Alignment segments view (viewport > 2Mbp)
-                // Draw simplified segments with reduced opacity for performance
-                let renderCount = 0;
-                const maxRenderCount = 10000; // Limit rendering for extreme performance
+                // Random sparsification for performance at extreme zoom levels
+                let alignmentsToRender = alignments;
+                const targetRenderCount = 100000; // Target number of alignments to render
                 
-                alignments.forEach(alignment => {{
-                    if (renderCount >= maxRenderCount) return;
+                if (alignments.length > targetRenderCount) {{
+                    // Calculate sampling probability
+                    const sampleProbability = targetRenderCount / alignments.length;
+                    
+                    // Deterministic sparsification based on alignment hash
+                    alignmentsToRender = alignments.filter(alignment => {{
+                        // Create a simple hash from alignment features
+                        const hashStr = `${{alignment.x}}_${{alignment.y}}_${{alignment.targetLen}}_${{alignment.queryLen}}_${{alignment.rev}}`;
+                        let hash = 0;
+                        for (let i = 0; i < hashStr.length; i++) {{
+                            const char = hashStr.charCodeAt(i);
+                            hash = ((hash << 5) - hash) + char;
+                            hash = hash & hash; // Convert to 32-bit integer
+                        }}
+                        // Use hash to deterministically decide if this alignment should be rendered
+                        const normalizedHash = (Math.abs(hash) % 1000000) / 1000000;
+                        return normalizedHash < sampleProbability;
+                    }});
+                }}
+                
+                alignmentsToRender.forEach(alignment => {{
                     
                     const startCoords = projectCoords(alignment.x, alignment.y);
                     const endX = alignment.x + alignment.targetLen;
                     const endY = alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen);
                     const endCoords = projectCoords(endX, endY);
                     
-                    // Enhanced frustum culling for performance
+                    // Enhanced frustum culling with margin for edge cases
                     const minX = Math.min(startCoords.x, endCoords.x);
                     const maxX = Math.max(startCoords.x, endCoords.x);
                     const minY = Math.min(startCoords.y, endCoords.y);
                     const maxY = Math.max(startCoords.y, endCoords.y);
                     
-                    if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
-                        // Use lower opacity for performance and visual clarity at this scale
-                        const alpha = Math.min(0.7, 1.0 / Math.sqrt(viewportWidthBp / 2000000));
+                    // Add margin to prevent edge case culling issues
+                    const margin = 100; // pixels
+                    if (maxX >= viewLeft - margin && minX <= viewRight + margin && 
+                        maxY >= viewTop - margin && minY <= viewBottom + margin) {{
+                        // Use consistent high opacity for visibility at all zoom levels
+                        const alpha = 0.9;
                         lineVertices.push(startCoords.x, startCoords.y);
                         lineVertices.push(endCoords.x, endCoords.y);
                         lineColors.push(summaryColor.r, summaryColor.g, summaryColor.b, alpha);
                         lineColors.push(summaryColor.r, summaryColor.g, summaryColor.b, alpha);
-                        renderCount++;
                     }}
                 }});
             }} else if (shouldShowDetails && detailedAlignments.length > 0) {{
@@ -1525,8 +1732,8 @@ fn generate_html_viewer(
                             if (insMaxX >= viewLeft && insMinX <= viewRight && insMaxY >= viewTop && insMinY <= viewBottom) {{
                                 lineVertices.push(startCoords.x, startCoords.y);
                                 lineVertices.push(endCoords.x, endCoords.y);
-                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
-                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.9);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.9);
                             }}
                         }} else if (op.type === 'deletion') {{
                             const endCoords = projectCoords(opX + (op.rev ? -op.len : op.len), opY);
@@ -1540,8 +1747,8 @@ fn generate_html_viewer(
                             if (delMaxX >= viewLeft && delMinX <= viewRight && delMaxY >= viewTop && delMinY <= viewBottom) {{
                                 lineVertices.push(startCoords.x, startCoords.y);
                                 lineVertices.push(endCoords.x, endCoords.y);
-                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
-                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.8);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.9);
+                                lineColors.push(indelColor.r, indelColor.g, indelColor.b, 0.9);
                             }}
                         }}
                     }});
@@ -1554,20 +1761,76 @@ fn generate_html_viewer(
                     const endY = alignment.y + (alignment.rev ? -alignment.queryLen : alignment.queryLen);
                     const endCoords = projectCoords(endX, endY);
                     
-                    // Simple frustum culling
+                    // Frustum culling with margin
                     const minX = Math.min(startCoords.x, endCoords.x);
                     const maxX = Math.max(startCoords.x, endCoords.x);
                     const minY = Math.min(startCoords.y, endCoords.y);
                     const maxY = Math.max(startCoords.y, endCoords.y);
                     
-                    if (maxX >= viewLeft && minX <= viewRight && maxY >= viewTop && minY <= viewBottom) {{
+                    const margin = 100; // pixels
+                    if (maxX >= viewLeft - margin && minX <= viewRight + margin && 
+                        maxY >= viewTop - margin && minY <= viewBottom + margin) {{
                         lineVertices.push(startCoords.x, startCoords.y);
                         lineVertices.push(endCoords.x, endCoords.y);
-                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
-                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.8);
+                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
+                        lineColors.push(matchColor.r, matchColor.g, matchColor.b, 0.9);
                     }}
                 }});
             }}
+            
+        }}
+
+        function drawBedRegions() {{
+            // BED rendering - draw filled rectangles
+            bedRegions.forEach(region => {{
+                let targetSeq = targets.find(t => t.name === region.chr);
+                let querySeq = queries.find(q => q.name === region.chr);
+                
+                // Use red color for BED regions (we can add color parsing later)
+                const color = {{ r: 1, g: 0, b: 0, a: 0.4 }};
+                
+                if (targetSeq) {{
+                    // Draw filled vertical rectangle for target sequence
+                    const startX = targetSeq.offset + region.start;
+                    const endX = targetSeq.offset + region.end;
+                    
+                    // Calculate step size based on both zoom and base pair coverage
+                    // At high zoom, use base pair resolution; at low zoom, use pixel resolution
+                    const currentViewport = calculateViewportInfo();
+                    const bpPerPixel = currentViewport.viewportWidthBp / canvasWidth;
+                    const stepSize = Math.min(Math.max(1, Math.floor(bpPerPixel)), Math.max(1, (endX - startX) / 1000));
+                    
+                    for (let x = startX; x <= endX; x += stepSize) {{
+                        const top = projectCoords(x, 0);
+                        const bottom = projectCoords(x, queryLength);
+                        lineVertices.push(top.x, top.y);
+                        lineVertices.push(bottom.x, bottom.y);
+                        lineColors.push(color.r, color.g, color.b, color.a);
+                        lineColors.push(color.r, color.g, color.b, color.a);
+                    }}
+                }}
+                
+                if (querySeq) {{
+                    // Draw filled horizontal rectangle for query sequence
+                    const startY = querySeq.offset + region.start;
+                    const endY = querySeq.offset + region.end;
+                    
+                    // Calculate step size based on both zoom and base pair coverage
+                    // At high zoom, use base pair resolution; at low zoom, use pixel resolution
+                    const currentViewport = calculateViewportInfo();
+                    const bpPerPixel = currentViewport.viewportWidthBp / canvasWidth;
+                    const stepSize = Math.min(Math.max(1, Math.floor(bpPerPixel)), Math.max(1, (endY - startY) / 1000));
+                    
+                    for (let y = startY; y <= endY; y += stepSize) {{
+                        const left = projectCoords(0, y);
+                        const right = projectCoords(targetLength, y);
+                        lineVertices.push(left.x, left.y);
+                        lineVertices.push(right.x, right.y);
+                        lineColors.push(color.r, color.g, color.b, color.a);
+                        lineColors.push(color.r, color.g, color.b, color.a);
+                    }}
+                }}
+            }});
         }}
         
         function drawPlot() {{
@@ -2122,57 +2385,59 @@ fn generate_html_viewer(
     </script>
 </body>
 </html>"#,
-        output_filename,
-        if dark { "#1a1a1a" } else { "#ffffff" },
-        if dark { "#ffffff" } else { "#000000" },
-        if dark { "#444444" } else { "#cccccc" },
-        if dark { "#2a2a2a" } else { "#f5f5f5" },
-        if dark { "#444444" } else { "#cccccc" },
-        if dark { "#2a2a2a" } else { "#f5f5f5" }, // config panel background
-        if dark { "#444444" } else { "#cccccc" }, // config panel border
-        if dark { "#2a2a2a" } else { "#f0f0f0" }, // minimap background
-        if dark { "#666666" } else { "#999999" }, // minimap border
-        if dark { "#00ff00" } else { "#0088ff" }, // viewport border
-        if dark {
+        config.output_filename,
+        if config.dark { "#1a1a1a" } else { "#ffffff" },
+        if config.dark { "#ffffff" } else { "#000000" },
+        if config.dark { "#444444" } else { "#cccccc" },
+        if config.dark { "#2a2a2a" } else { "#f5f5f5" },
+        if config.dark { "#444444" } else { "#cccccc" },
+        if config.dark { "#2a2a2a" } else { "#f5f5f5" }, // config panel background
+        if config.dark { "#444444" } else { "#cccccc" }, // config panel border
+        if config.dark { "#2a2a2a" } else { "#f0f0f0" }, // minimap background
+        if config.dark { "#666666" } else { "#999999" }, // minimap border
+        if config.dark { "#00ff00" } else { "#0088ff" }, // viewport border
+        if config.dark {
             "rgba(0,255,0,0.2)"
         } else {
             "rgba(0,136,255,0.2)"
         }, // viewport fill
-        if dark { "#666666" } else { "#999999" },
-        if dark {
+        if config.dark { "#666666" } else { "#999999" },
+        if config.dark {
             "rgba(26,26,26,0.8)"
         } else {
             "rgba(255,255,255,0.8)"
         }, // label background
-        if dark { "#1a1a1a" } else { "#ffffff" }, // page background again
-        if dark { "#00ff00" } else { "#0088ff" }, // render mode color
+        if config.dark { "#1a1a1a" } else { "#ffffff" }, // page background again
+        if config.dark { "#00ff00" } else { "#0088ff" }, // render mode color
         alignments_json,
         summary_json,
         detailed_json,
         targets_json,
         queries_json,
-        if using_zoom {
-            ranges.0 .1 - ranges.0 .0
+        bed_json,
+        bedpe_json,
+        if config.using_zoom {
+            config.ranges.0 .1 - config.ranges.0 .0
         } else {
-            paf.target_length as usize
+            config.paf.target_length as usize
         },
-        if using_zoom {
-            ranges.1 .1 - ranges.1 .0
+        if config.using_zoom {
+            config.ranges.1 .1 - config.ranges.1 .0
         } else {
-            paf.query_length as usize
+            config.paf.query_length as usize
         },
-        using_zoom,
-        format!("[{}, {}]", ranges.0 .0, ranges.0 .1),
-        format!("[{}, {}]", ranges.1 .0, ranges.1 .1),
-        dark,
+        config.using_zoom,
+        format!("[{}, {}]", config.ranges.0 .0, config.ranges.0 .1),
+        format!("[{}, {}]", config.ranges.1 .0, config.ranges.1 .1),
+        config.dark,
     );
 
-    let html_filename = if output_filename.ends_with(".html") {
-        output_filename.to_string()
-    } else if output_filename.ends_with(".png") {
-        output_filename.replace(".png", ".html")
+    let html_filename = if config.output_filename.ends_with(".html") {
+        config.output_filename.to_string()
+    } else if config.output_filename.ends_with(".png") {
+        config.output_filename.replace(".png", ".html")
     } else {
-        format!("{output_filename}.html")
+        format!("{}.html", config.output_filename)
     };
     std::fs::write(&html_filename, html_content).expect("Failed to write HTML file");
 
@@ -2192,7 +2457,7 @@ mod tests {
         assert_eq!(paf_query_length(test_line), 1000);
         assert_eq!(paf_query_begin(test_line), 100);
         assert_eq!(paf_query_end(test_line), 900);
-        assert_eq!(paf_query_is_rev(test_line), false);
+        assert!(!paf_query_is_rev(test_line));
 
         assert_eq!(paf_target(test_line), "target1");
         assert_eq!(paf_target_length(test_line), 2000);
@@ -2204,7 +2469,7 @@ mod tests {
     fn test_paf_reverse_strand() {
         let test_line =
             "query1\t1000\t100\t900\t-\ttarget1\t2000\t200\t1800\t800\t800\t60\tcg:Z:800M";
-        assert_eq!(paf_query_is_rev(test_line), true);
+        assert!(paf_query_is_rev(test_line));
     }
 
     #[test]
