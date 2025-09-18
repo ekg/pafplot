@@ -469,11 +469,10 @@ fn main() {
                 .help("input PAF file"),
         )
         .arg(
-            Arg::with_name("png")
+            Arg::with_name("html")
                 .takes_value(false)
-                .short("p")
-                .long("png")
-                .help("Generate a PNG image output in addition to the default HTML viewer."),
+                .long("html")
+                .help("Generate an interactive HTML viewer in addition to the default PNG output."),
         )
         .arg(
             Arg::with_name("dark")
@@ -508,7 +507,7 @@ fn main() {
                 .takes_value(true)
                 .short("o")
                 .long("output")
-                .help("Output filename (defaults to input.paf.html). Extension determines format."),
+                .help("Output filename (defaults to input.paf.png)."),
         )
         .arg(
             Arg::with_name("bed")
@@ -535,7 +534,7 @@ fn main() {
         .parse::<usize>()
         .unwrap();
 
-    let default_output = format!("{filename}.html");
+    let default_output = format!("{filename}.png");
 
     let output_filename = matches.value_of("output").unwrap_or(&default_output);
 
@@ -760,33 +759,37 @@ fn main() {
     };
     paf.for_each_match_in_file(draw_match);
 
-    // Generate PNG if requested
-    let _png_filename = if matches.is_present("png") {
-        // If output filename ends with .html, create a .png version
-        let png_name = if output_filename.ends_with(".html") {
-            output_filename.replace(".html", ".png")
-        } else {
-            format!("{output_filename}.png")
-        };
-
-        let path = &Path::new(&png_name);
-        // encode_file takes the path to the image, a u8 array,
-        // the width, the height, the color mode, and the bit depth
-        if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8)
-        {
-            panic!("failed to write png: {:?}", e);
-        }
-        png_name
+    // Generate PNG (default output)
+    let png_filename = if output_filename.ends_with(".png") {
+        output_filename.to_string()
+    } else if output_filename.ends_with(".html") {
+        output_filename.replace(".html", ".png")
     } else {
-        String::new()
+        format!("{output_filename}.png")
     };
 
-    // Generate HTML viewer unless only PNG was requested
-    if !matches.is_present("png") || matches.is_present("html") {
+    let path = &Path::new(&png_filename);
+    // encode_file takes the path to the image, a u8 array,
+    // the width, the height, the color mode, and the bit depth
+    if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8)
+    {
+        panic!("failed to write png: {:?}", e);
+    }
+    eprintln!("[pafplot] PNG image written to: {}", png_filename);
+
+    // Generate HTML viewer if requested
+    if matches.is_present("html") {
+        let html_filename = if output_filename.ends_with(".html") {
+            output_filename.to_string()
+        } else if output_filename.ends_with(".png") {
+            output_filename.replace(".png", ".html")
+        } else {
+            format!("{output_filename}.html")
+        };
         generate_html_viewer(HtmlViewerConfig {
             paf: &paf,
             _axes: axes,
-            output_filename,
+            output_filename: &html_filename,
             dark,
             using_zoom,
             ranges: (target_range, query_range),
