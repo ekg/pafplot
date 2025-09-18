@@ -771,8 +771,7 @@ fn main() {
     let path = &Path::new(&png_filename);
     // encode_file takes the path to the image, a u8 array,
     // the width, the height, the color mode, and the bit depth
-    if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8)
-    {
+    if let Err(e) = lodepng::encode_file(path, &raw, axes.0, axes.1, lodepng::ColorType::RGB, 8) {
         panic!("failed to write png: {:?}", e);
     }
     eprintln!("[pafplot] PNG image written to: {}", png_filename);
