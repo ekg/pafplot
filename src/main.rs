@@ -17,6 +17,49 @@ use clap::{App, Arg}; //, SubCommand};
 
 extern crate base64;
 
+/// Numeric-aware (natural) string comparison.
+/// e.g. "chr9" < "chr10", "contig51" < "contig100".
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let mut a = a;
+    let mut b = b;
+    loop {
+        match (a.is_empty(), b.is_empty()) {
+            (true, true) => return std::cmp::Ordering::Equal,
+            (true, false) => return std::cmp::Ordering::Less,
+            (false, true) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+        if a.as_bytes()[0].is_ascii_digit() && b.as_bytes()[0].is_ascii_digit() {
+            let a_end = a.find(|c: char| !c.is_ascii_digit()).unwrap_or(a.len());
+            let b_end = b.find(|c: char| !c.is_ascii_digit()).unwrap_or(b.len());
+            let an: u64 = a[..a_end].parse().unwrap_or(0);
+            let bn: u64 = b[..b_end].parse().unwrap_or(0);
+            let ord = an.cmp(&bn);
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+            a = &a[a_end..];
+            b = &b[b_end..];
+        } else {
+            let a_end = a.find(|c: char| c.is_ascii_digit()).unwrap_or(a.len());
+            let b_end = b.find(|c: char| c.is_ascii_digit()).unwrap_or(b.len());
+            let ord = a[..a_end].cmp(&b[..b_end]);
+            if ord != std::cmp::Ordering::Equal {
+                return ord;
+            }
+            a = &a[a_end..];
+            b = &b[b_end..];
+        }
+    }
+}
+
+/// Returns the suffix of a sequence name after the last '.', or the full name
+/// if there is no '.'. Used to compare syntenic chromosomes across assemblies
+/// (e.g. "asm1.chr1" and "asm2.chr1" both key on "chr1").
+fn seq_suffix(name: &str) -> &str {
+    name.rfind('.').map(|i| &name[i + 1..]).unwrap_or(name)
+}
+
 fn for_each_line_in_file(paf_filename: &str, mut callback: impl FnMut(&str)) {
     let file = File::open(paf_filename).unwrap();
     let reader: Box<dyn BufRead> = if paf_filename.ends_with(".gz") {
@@ -161,7 +204,10 @@ impl PafFile {
             }
         });
         let mut targets_sort = targets.clone();
-        targets_sort.sort_by(|a, b| b.length.partial_cmp(&a.length).unwrap());
+        targets_sort.sort_by(|a, b| {
+            natural_cmp(seq_suffix(&a.name), seq_suffix(&b.name))
+                .then_with(|| natural_cmp(&a.name, &b.name))
+        });
         let mut target_idx: usize = 0;
         let mut target_offset: usize = 0;
         targets_sort.iter().for_each(|t| {
@@ -173,7 +219,10 @@ impl PafFile {
             target_offset += target.length;
         });
         let mut queries_sort = queries.clone();
-        queries_sort.sort_by(|a, b| b.length.partial_cmp(&a.length).unwrap());
+        queries_sort.sort_by(|a, b| {
+            natural_cmp(seq_suffix(&a.name), seq_suffix(&b.name))
+                .then_with(|| natural_cmp(&a.name, &b.name))
+        });
         let mut query_idx: usize = 0;
         let mut query_offset: usize = 0;
         queries_sort.iter().for_each(|q| {
