@@ -2782,6 +2782,17 @@ struct PdfViewerConfig<'a> {
     highlight_fill: bool,
 }
 
+/// Human-readable sequence length for PDF labels.
+fn fmt_len(bp: usize) -> String {
+    if bp >= 1_000_000 {
+        format!("{:.1} Mb", bp as f64 / 1_000_000.0)
+    } else if bp >= 1_000 {
+        format!("{} kb", (bp as f64 / 1_000.0).round() as usize)
+    } else {
+        format!("{} bp", bp)
+    }
+}
+
 fn pdf_escape(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars() {
@@ -2809,8 +2820,18 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
     let img_h = ax_h * img_scale;
     let font_size = 9.0;
     // margins sized to the longest labels so nothing clips
-    let longest_q = paf.queries.iter().map(|q| q.name.len()).max().unwrap_or(10) as f64;
-    let longest_t = paf.targets.iter().map(|t| t.name.len()).max().unwrap_or(10) as f64;
+    let row_labels: Vec<String> = paf
+        .queries
+        .iter()
+        .map(|q| format!("{} ({})", q.name, fmt_len(q.length)))
+        .collect();
+    let col_labels: Vec<String> = paf
+        .targets
+        .iter()
+        .map(|t| format!("{} ({})", t.name, fmt_len(t.length)))
+        .collect();
+    let longest_q = row_labels.iter().map(|s| s.len()).max().unwrap_or(10) as f64;
+    let longest_t = col_labels.iter().map(|s| s.len()).max().unwrap_or(10) as f64;
     let margin_l = (longest_q * font_size * 0.52 + 14.0).max(90.0);
     let margin_t = (longest_t * font_size * 0.52 + 14.0).max(90.0);
     let margin_b = if config.legend.is_some() { 40.0 } else { 24.0 };
@@ -2888,11 +2909,12 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
             .iter()
             .find(|s| q_mid >= s.offset && q_mid < s.offset + s.length)
         {
+            let qlabel = format!("{} ({})", q.name, fmt_len(q.length));
             label_ops.push_str(&format!(
                 "1 0 0 1 {:.2} {:.2} Tm ({}) Tj\n",
-                (margin_l - 8.0 - q.name.len() as f64 * font_size * 0.52).max(4.0),
+                (margin_l - 8.0 - qlabel.len() as f64 * font_size * 0.52).max(4.0),
                 img_y + img_h / 2.0 - 2.5,
-                pdf_escape(&q.name)
+                pdf_escape(&qlabel)
             ));
             annots.push(Annot {
                 rect: [0.0, img_y, margin_l - 4.0, img_y + img_h],
@@ -2920,14 +2942,15 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
         }
     } else {
         // full matrix: label every row and column
-        for q in paf.queries.iter() {
+        for (qi, q) in paf.queries.iter().enumerate() {
             let (py0, py1) = qy(q.offset, q.length);
             let y_mid = py2pdf((py0 + py1) / 2.0) - 2.5;
+            let label = &row_labels[qi];
             label_ops.push_str(&format!(
                 "1 0 0 1 {:.2} {:.2} Tm ({}) Tj\n",
-                (margin_l - 8.0 - q.name.len() as f64 * font_size * 0.52).max(4.0),
+                (margin_l - 8.0 - label.len() as f64 * font_size * 0.52).max(4.0),
                 y_mid,
-                pdf_escape(&q.name)
+                pdf_escape(label)
             ));
             annots.push(Annot {
                 rect: [
@@ -2939,13 +2962,14 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
                 tip: format!("query {} ({} bp)", q.name, q.length),
             });
         }
-        for t in paf.targets.iter() {
+        for (ti, t) in paf.targets.iter().enumerate() {
             let (px0, px1) = tx(t.offset, t.length);
+            let label = &col_labels[ti];
             label_ops.push_str(&format!(
                 "0 1 -1 0 {:.2} {:.2} Tm ({}) Tj\n",
                 px2pdf(px0) + 2.0,
                 img_y + img_h + 3.0,
-                pdf_escape(&t.name)
+                pdf_escape(label)
             ));
             annots.push(Annot {
                 rect: [px2pdf(px0), img_y + img_h + 3.0, px2pdf(px1), page_h],
@@ -3040,6 +3064,21 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
         let (bya, byb) = (py2pdf(y1), py2pdf(y0));
         let (by0, by1) = if bya <= byb { (bya, byb) } else { (byb, bya) };
         let (cr, cg, cb) = hl.color;
+        // expand sub-pixel boxes to a visible minimum, around their center,
+        // so small tracts (e.g. a 3 kb patch in a 500 kb window) stay visible
+        const MIN_BOX_PT: f64 = 6.0;
+        let (mut bx0, mut bx1) = (bx0, bx1);
+        let (mut by0, mut by1) = (by0, by1);
+        if bx1 - bx0 < MIN_BOX_PT {
+            let c = (bx0 + bx1) / 2.0;
+            bx0 = c - MIN_BOX_PT / 2.0;
+            bx1 = c + MIN_BOX_PT / 2.0;
+        }
+        if by1 - by0 < MIN_BOX_PT {
+            let c = (by0 + by1) / 2.0;
+            by0 = c - MIN_BOX_PT / 2.0;
+            by1 = c + MIN_BOX_PT / 2.0;
+        }
         // outline only by default: a filled box tints the dot plot and obscures
         // the identity coloring; --highlight-fill restores the translucent fill
         if config.highlight_fill {
