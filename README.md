@@ -35,6 +35,22 @@ pafplot aln.paf --pdf -o aln.pdf     # writes aln.pdf (and aln.png)
 pafplot aln.paf --pdf                 # writes aln.paf.pdf next to aln.paf.png
 ```
 
+#### highlighting 2D regions (exchange candidates)
+
+`--highlight` takes one or more TSV files of 2D regions drawn on the PDF as
+labeled, semi-transparent boxes (with their own hover tooltips):
+
+```
+# qname qstart qend tname tstart tend color    label
+PAN027#pat#chr5q  63794 98749  PAN011#hap2#chr1p 64351 99295 #E41A1C  G2 core: 35 kb @ 99.83%
+```
+
+The column named first is the query (row) axis and the second is the target
+(column) axis; if you give them in the reverse order pafplot swaps them.
+Coordinates are in the sequence's own space, as in the PAF. Colors are
+`#RRGGBB`; columns 8+ form the label. Boxes are clipped to the zoomed range
+when `--range` is used.
+
 ## usage
 
 Generate alignments with the cigar string attached to the `cg:Z:` tag.

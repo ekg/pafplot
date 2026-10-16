@@ -529,6 +529,14 @@ fn main() {
                 .long("bedpe")
                 .help("BEDPE file(s) for marking 2D ranges as semi-transparent overlays"),
         )
+        .arg(
+            Arg::with_name("highlight")
+                .takes_value(true)
+                .multiple(true)
+                .long("highlight")
+                .help("Highlight file(s): TSV of 2D regions drawn on the PDF as labeled boxes \
+                       (qname\tqstart\tqend\ttname\ttstart\ttend\t[#RRGGBB]\t[label])"),
+        )
         .get_matches();
 
     let filename = matches.value_of("INPUT").unwrap();
@@ -555,6 +563,11 @@ fn main() {
     let bedpe_regions: Vec<BedpeRegion> = matches
         .values_of("bedpe")
         .map(|files| files.flat_map(parse_bedpe_file).collect())
+        .unwrap_or_default();
+
+    let highlight_regions: Vec<HighlightRegion> = matches
+        .values_of("highlight")
+        .map(|files| files.flat_map(parse_highlight_file).collect())
         .unwrap_or_default();
 
     let using_zoom = matches.is_present("range");
@@ -821,6 +834,7 @@ fn main() {
             using_zoom,
             ranges: (target_range, query_range),
             pair_stats: &pair_stats,
+            highlights: &highlight_regions,
         });
     }
 
@@ -2502,6 +2516,74 @@ fn find_seq<'a>(seqs: &'a [AlignedSeq], name: &str) -> Option<&'a AlignedSeq> {
     seqs.iter().find(|s| s.name == name)
 }
 
+/// A 2D highlight region drawn on the PDF dot plot: query row range x target
+/// column range, with an optional color (hex, default orange) and label.
+#[derive(Debug, Clone)]
+struct HighlightRegion {
+    qname: String,
+    qstart: usize,
+    qend: usize,
+    tname: String,
+    tstart: usize,
+    tend: usize,
+    color: (f64, f64, f64),
+    label: Option<String>,
+}
+
+fn parse_hex_color(s: &str) -> Option<(f64, f64, f64)> {
+    let h = s.trim_start_matches('#');
+    if h.len() == 6 {
+        let r = u8::from_str_radix(&h[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&h[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&h[4..6], 16).ok()?;
+        Some((r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0))
+    } else {
+        None
+    }
+}
+
+fn parse_highlight_file(filename: &str) -> Vec<HighlightRegion> {
+    let mut regions = Vec::new();
+    let file = File::open(filename).unwrap();
+    let reader: Box<dyn BufRead> = if filename.ends_with(".gz") {
+        Box::new(BufReader::new(GzDecoder::new(file)))
+    } else {
+        Box::new(BufReader::new(file))
+    };
+    for line in reader.lines() {
+        let line = line.unwrap();
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 6 {
+            eprintln!("[pafplot::highlight] skipping malformed line: {}", line);
+            continue;
+        }
+        let color = if f.len() > 6 {
+            parse_hex_color(f[6]).unwrap_or((1.0, 0.55, 0.0))
+        } else {
+            (1.0, 0.55, 0.0)
+        };
+        let label = if f.len() > 7 {
+            Some(f[7..].join(" "))
+        } else {
+            None
+        };
+        regions.push(HighlightRegion {
+            qname: f[0].into(),
+            qstart: f[1].parse().unwrap(),
+            qend: f[2].parse().unwrap(),
+            tname: f[3].into(),
+            tstart: f[4].parse().unwrap(),
+            tend: f[5].parse().unwrap(),
+            color,
+            label,
+        });
+    }
+    regions
+}
+
 struct PdfViewerConfig<'a> {
     paf: &'a PafFile,
     axes: (usize, usize),
@@ -2510,6 +2592,7 @@ struct PdfViewerConfig<'a> {
     using_zoom: bool,
     ranges: ((usize, usize), (usize, usize)),
     pair_stats: &'a PairStats,
+    highlights: &'a [HighlightRegion],
 }
 
 fn pdf_escape(s: &str) -> String {
@@ -2698,18 +2781,114 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
     }
     label_ops.push_str("ET\n");
 
+    // highlight boxes for exchange candidates and other 2D regions
+    let mut highlight_ops = String::new();
+    for hl in config.highlights.iter() {
+        // resolve the query and target; swap if the user gave them in reverse
+        let (q, t) = match (
+            find_seq(&paf.queries, &hl.qname),
+            find_seq(&paf.targets, &hl.tname),
+        ) {
+            (Some(q), Some(t)) => (q, t),
+            _ => match (
+                find_seq(&paf.queries, &hl.tname),
+                find_seq(&paf.targets, &hl.qname),
+            ) {
+                (Some(q), Some(t)) => (q, t),
+                _ => {
+                    eprintln!(
+                        "[pafplot::pdf] highlight sequences not found, skipping: {} x {}",
+                        hl.qname, hl.tname
+                    );
+                    continue;
+                }
+            },
+        };
+        let q_is_swapped = find_seq(&paf.queries, &hl.qname).is_none();
+        let (qg0, qg1) = if q_is_swapped {
+            (q.offset + hl.tstart, q.offset + hl.tend)
+        } else {
+            (q.offset + hl.qstart, q.offset + hl.qend)
+        };
+        let (tg0, tg1) = if q_is_swapped {
+            (t.offset + hl.qstart, t.offset + hl.qend)
+        } else {
+            (t.offset + hl.tstart, t.offset + hl.tend)
+        };
+        // project the global 2D range into the image area
+        let (x0, x1, y0, y1) = if config.using_zoom {
+            let (tr, qr) = config.ranges;
+            if tg1 <= tr.0 || tg0 >= tr.1 || qg1 <= qr.0 || qg0 >= qr.1 {
+                continue; // outside the zoomed range
+            }
+            let tl = (tr.1 - tr.0) as f64;
+            let ql = (qr.1 - qr.0) as f64;
+            (
+                img_w * ((tg0.max(tr.0) - tr.0) as f64 / tl),
+                img_w * ((tg1.min(tr.1) - tr.0) as f64 / tl),
+                img_h * ((qg0.max(qr.0) - qr.0) as f64 / ql),
+                img_h * ((qg1.min(qr.1) - qr.0) as f64 / ql),
+            )
+        } else {
+            (
+                img_w * (tg0 as f64 / paf.target_length),
+                img_w * (tg1 as f64 / paf.target_length),
+                img_h * (qg0 as f64 / paf.query_length),
+                img_h * (qg1 as f64 / paf.query_length),
+            )
+        };
+        let (bx0, bx1) = (px2pdf(x0), px2pdf(x1));
+        let (by0, by1) = (py2pdf(y1), py2pdf(y0));
+        let (cr, cg, cb) = hl.color;
+        highlight_ops.push_str(&format!(
+            "/GS0 gs\n{:.3} {:.3} {:.3} rg\n{:.2} {:.2} {:.2} {:.2} re f\n/GS1 gs\n{:.3} {:.3} {:.3} RG\n1 w\n{:.2} {:.2} {:.2} {:.2} re S\n",
+            cr, cg, cb, bx0, by0, bx1 - bx0, by1 - by0, cr, cg, cb, bx0, by0, bx1 - bx0, by1 - by0
+        ));
+        // label: right of the box when there is room, otherwise left of it
+        let label_text = hl.label.clone().unwrap_or_else(|| {
+            format!(
+                "{}:{}-{} x {}:{}-{}",
+                hl.qname, hl.qstart, hl.qend, hl.tname, hl.tstart, hl.tend
+            )
+        });
+        highlight_ops.push_str("BT\n/F1 6.5 Tf\n");
+        let (tx_pos, ty_pos) = if bx1 + 150.0 < page_w {
+            (bx1 + 3.0, by1 - 7.0)
+        } else {
+            (
+                (bx0 - 3.0 - label_text.len() as f64 * 6.5 * 0.52).max(2.0),
+                by1 - 7.0,
+            )
+        };
+        highlight_ops.push_str(&format!(
+            "{:.3} {:.3} {:.3} rg\n1 0 0 1 {:.2} {:.2} Tm ({}) Tj\nET\n",
+            cr,
+            cg,
+            cb,
+            tx_pos,
+            ty_pos,
+            pdf_escape(&label_text)
+        ));
+        annots.push(Annot {
+            rect: [bx0, by0, bx1, by1],
+            tip: label_text.clone(),
+        });
+    }
+
     // assemble the page content stream
     let content = format!(
-        "q\n{:.2} 0 0 {:.2} {:.2} {:.2} cm\n/Im0 Do\nQ\n{}",
-        img_w, img_h, img_x, img_y, label_ops
+        "q\n{:.2} 0 0 {:.2} {:.2} {:.2} cm\n/Im0 Do\nQ\n{}{}",
+        img_w, img_h, img_x, img_y, label_ops, highlight_ops
     );
 
     // ---- assemble the PDF file
     let n_annots = annots.len();
     let font_obj = 6;
-    let first_annot = 7;
+    let gs_fill_obj = 7; // /GS0: translucent fill for highlight boxes
+    let gs_full_obj = 8; // /GS1: opaque restore
+    let first_annot = 9;
     let total_objs = if n_annots == 0 {
-        font_obj
+        gs_full_obj
     } else {
         first_annot + n_annots - 1
     }; // objects 1..=total_objs
@@ -2745,8 +2924,8 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
         annot_refs.push_str(&format!("{} 0 R ", i));
     }
     let page_obj = format!(
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources << /XObject << /Im0 5 0 R >> /Font << /F1 {} 0 R >> >> /Contents 4 0 R /Annots [{}]>>",
-        page_w, page_h, font_obj, annot_refs
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources << /XObject << /Im0 5 0 R >> /Font << /F1 {} 0 R >> /ExtGState << /GS0 {} 0 R /GS1 {} 0 R >> >> /Contents 4 0 R /Annots [{}]>>",
+        page_w, page_h, font_obj, gs_fill_obj, gs_full_obj, annot_refs
     );
     push_obj(&mut buf, &mut offsets, page_obj.into_bytes());
     // 4: content stream
@@ -2771,7 +2950,18 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
         &mut offsets,
         b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
     );
-    // 7..: link annotations carrying hover tooltips
+    // 7: translucent fill state; 8: opaque state
+    push_obj(
+        &mut buf,
+        &mut offsets,
+        b"<< /Type /ExtGState /ca 0.18 /CA 0.18 >>".to_vec(),
+    );
+    push_obj(
+        &mut buf,
+        &mut offsets,
+        b"<< /Type /ExtGState /ca 1 /CA 1 >>".to_vec(),
+    );
+    // 9..: link annotations carrying hover tooltips
     for a in annots.iter() {
         let annot_obj = format!(
             "<< /Type /Annot /Subtype /Link /Rect [{:.2} {:.2} {:.2} {:.2}] /Border [0 0 0] /F 4 /TU ({}) >>",
