@@ -2838,9 +2838,11 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
             )
         }
     };
-    // band coords (x right, y down from image top, already in page space) -> PDF user space
+    // band coords -> PDF user space. x: left to right. y: the raster stores
+    // query offset 0 in its LAST row (bottom of the PNG), so query offset 0
+    // maps to the BOTTOM of the image square, not the top.
     let px2pdf = |px: f64| img_x + px;
-    let py2pdf = |py: f64| img_y + img_h - py;
+    let py2pdf = |py: f64| img_y + py;
 
     // visible text labels + tooltip annotations
     let mut label_ops = String::new();
@@ -2918,7 +2920,12 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
                 pdf_escape(&q.name)
             ));
             annots.push(Annot {
-                rect: [0.0, py2pdf(py1), margin_l - 4.0, py2pdf(py0)],
+                rect: [
+                    0.0,
+                    py2pdf(py1).min(py2pdf(py0)),
+                    margin_l - 4.0,
+                    py2pdf(py1).max(py2pdf(py0)),
+                ],
                 tip: format!("query {} ({} bp)", q.name, q.length),
             });
         }
@@ -2944,7 +2951,12 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
             let (px0, px1) = tx(t.offset, t.length);
             let (py0, py1) = qy(q.offset, q.length);
             annots.push(Annot {
-                rect: [px2pdf(px0), py2pdf(py1), px2pdf(px1), py2pdf(py0)],
+                rect: [
+                    px2pdf(px0),
+                    py2pdf(py1).min(py2pdf(py0)),
+                    px2pdf(px1),
+                    py2pdf(py1).max(py2pdf(py0)),
+                ],
                 tip: format!(
                     "{} x {}: {} alignments, {} bp, best identity {:.1}%",
                     qname,
@@ -3015,7 +3027,8 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
             )
         };
         let (bx0, bx1) = (px2pdf(x0), px2pdf(x1));
-        let (by0, by1) = (py2pdf(y1), py2pdf(y0));
+        let (bya, byb) = (py2pdf(y1), py2pdf(y0));
+        let (by0, by1) = if bya <= byb { (bya, byb) } else { (byb, bya) };
         let (cr, cg, cb) = hl.color;
         highlight_ops.push_str(&format!(
             "/GS0 gs\n{:.3} {:.3} {:.3} rg\n{:.2} {:.2} {:.2} {:.2} re f\n/GS1 gs\n{:.3} {:.3} {:.3} RG\n1 w\n{:.2} {:.2} {:.2} {:.2} re S\n",
