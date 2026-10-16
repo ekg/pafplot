@@ -460,7 +460,7 @@ fn main() {
     let matches = App::new("pafplot")
         .version("0.1.0")
         .author("Erik Garrison <erik.garrison@gmail.com>")
-        .about("Generate an interactive HTML dotplot viewer from pairwise DNA alignments in PAF format")
+        .about("Generate dot plots from pairwise DNA alignments in PAF format (PNG; optional interactive HTML and labeled PDF with mouseover tooltips)")
         .arg(
             Arg::with_name("INPUT")
                 .required(true)
@@ -473,6 +473,12 @@ fn main() {
                 .takes_value(false)
                 .long("html")
                 .help("Generate an interactive HTML viewer in addition to the default PNG output."),
+        )
+        .arg(
+            Arg::with_name("pdf")
+                .takes_value(false)
+                .long("pdf")
+                .help("Emit a PDF embedding the dot plot, with row/column labels and mouseover tooltips."),
         )
         .arg(
             Arg::with_name("dark")
@@ -759,11 +765,31 @@ fn main() {
     };
     paf.for_each_match_in_file(draw_match);
 
+    // per-(query, target) pair alignment statistics, used for PDF cell tooltips
+    let mut pair_stats: PairStats = std::collections::HashMap::new();
+    for_each_line_in_file(filename, |l: &str| {
+        let q = paf_query(l);
+        let t = paf_target(l);
+        let matches: f64 = l.split('\t').nth(9).unwrap_or("0").parse().unwrap_or(0.0);
+        let aln_len: f64 = l.split('\t').nth(10).unwrap_or("1").parse().unwrap_or(1.0);
+        let entry = pair_stats.entry((q, t)).or_insert((0usize, 0u64, 0f64));
+        entry.0 += 1;
+        entry.1 += (paf_query_end(l) - paf_query_begin(l)) as u64;
+        if aln_len > 0.0 {
+            let id = matches / aln_len;
+            if id > entry.2 {
+                entry.2 = id;
+            }
+        }
+    });
+
     // Generate PNG (default output)
     let png_filename = if output_filename.ends_with(".png") {
         output_filename.to_string()
     } else if output_filename.ends_with(".html") {
         output_filename.replace(".html", ".png")
+    } else if output_filename.ends_with(".pdf") {
+        output_filename.replace(".pdf", ".png")
     } else {
         format!("{output_filename}.png")
     };
@@ -775,6 +801,28 @@ fn main() {
         panic!("failed to write png: {:?}", e);
     }
     eprintln!("[pafplot] PNG image written to: {}", png_filename);
+
+    // Generate PDF viewer if requested
+    if matches.is_present("pdf") || output_filename.ends_with(".pdf") {
+        let pdf_filename = if output_filename.ends_with(".pdf") {
+            output_filename.to_string()
+        } else if output_filename.ends_with(".png") {
+            output_filename.replace(".png", ".pdf")
+        } else if output_filename.ends_with(".html") {
+            output_filename.replace(".html", ".pdf")
+        } else {
+            format!("{output_filename}.pdf")
+        };
+        generate_pdf_viewer(PdfViewerConfig {
+            paf: &paf,
+            axes,
+            raw: &raw,
+            output_filename: &pdf_filename,
+            using_zoom,
+            ranges: (target_range, query_range),
+            pair_stats: &pair_stats,
+        });
+    }
 
     // Generate HTML viewer if requested
     if matches.is_present("html") {
@@ -2444,6 +2492,317 @@ fn generate_html_viewer(config: HtmlViewerConfig) {
     std::fs::write(&html_filename, html_content).expect("Failed to write HTML file");
 
     println!("Generated interactive HTML viewer: {html_filename}");
+}
+
+/// Per-(query, target) pair statistics used to fill PDF cell tooltips:
+/// (alignment count, total aligned bp, best identity 0..1)
+type PairStats = std::collections::HashMap<(String, String), (usize, u64, f64)>;
+
+fn find_seq<'a>(seqs: &'a [AlignedSeq], name: &str) -> Option<&'a AlignedSeq> {
+    seqs.iter().find(|s| s.name == name)
+}
+
+struct PdfViewerConfig<'a> {
+    paf: &'a PafFile,
+    axes: (usize, usize),
+    raw: &'a [u8],
+    output_filename: &'a str,
+    using_zoom: bool,
+    ranges: ((usize, usize), (usize, usize)),
+    pair_stats: &'a PairStats,
+}
+
+fn pdf_escape(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '(' => out.push_str("\\("),
+            ')' => out.push_str("\\)"),
+            _ if (c as u32) < 32 || (c as u32) > 126 => out.push('?'),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Generate a PDF that embeds the dot plot raster with labeled rows (queries)
+/// and columns (targets), plus mouseover tooltips on the label strips and on
+/// every alignment-populated cell of the matrix.
+fn generate_pdf_viewer(config: PdfViewerConfig) {
+    use std::io::Write;
+    let paf = config.paf;
+    let (ax_w, ax_h) = (config.axes.0 as f64, config.axes.1 as f64);
+    const MARGIN_L: f64 = 200.0; // room for query (row) labels
+    const MARGIN_T: f64 = 200.0; // room for target (column) labels
+    const MARGIN_B: f64 = 24.0;
+    const MARGIN_R: f64 = 16.0;
+    let page_w = MARGIN_L + ax_w + MARGIN_R;
+    let page_h = MARGIN_T + ax_h + MARGIN_B;
+    let img_x = MARGIN_L;
+    let img_y = MARGIN_B;
+    let font_size = 7.0;
+
+    // zlib-compress the raster for the image XObject
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(config.raw)
+        .expect("[pafplot::pdf] deflate raster");
+    let img_data = encoder.finish().expect("[pafplot::pdf] finish deflate");
+
+    // band geometry helpers: (start, end) pixel ranges for a sequence's span
+    let tx = |off: usize, len: usize| -> (f64, f64) {
+        if paf.target_length <= 0.0 {
+            (0.0, 0.0)
+        } else {
+            (
+                ax_w * (off as f64 / paf.target_length),
+                ax_w * ((off + len) as f64 / paf.target_length),
+            )
+        }
+    };
+    let qy = |off: usize, len: usize| -> (f64, f64) {
+        if paf.query_length <= 0.0 {
+            (0.0, 0.0)
+        } else {
+            (
+                ax_h * (off as f64 / paf.query_length),
+                ax_h * ((off + len) as f64 / paf.query_length),
+            )
+        }
+    };
+    // pixel coords (x right, y down from image top) -> PDF user space
+    let px2pdf = |px: f64| img_x + px;
+    let py2pdf = |py: f64| img_y + ax_h - py;
+
+    // visible text labels + tooltip annotations
+    let mut label_ops = String::new();
+    label_ops.push_str("BT\n/F1 7 Tf\n");
+    struct Annot {
+        rect: [f64; 4],
+        tip: String,
+    }
+    let mut annots: Vec<Annot> = Vec::new();
+
+    if config.using_zoom {
+        // single-sequence zoom: one row label, one column label, one cell tooltip
+        let t_mid = (config.ranges.0 .0 + config.ranges.0 .1) / 2;
+        let q_mid = (config.ranges.1 .0 + config.ranges.1 .1) / 2;
+        if let Some(t) = paf
+            .targets
+            .iter()
+            .find(|s| t_mid >= s.offset && t_mid < s.offset + s.length)
+        {
+            label_ops.push_str(&format!(
+                "0 1 -1 0 {:.2} {:.2} Tm ({}) Tj\n",
+                img_x + 3.0,
+                img_y + ax_h + 3.0,
+                pdf_escape(&t.name)
+            ));
+            annots.push(Annot {
+                rect: [img_x, img_y + ax_h + 3.0, img_x + ax_w, page_h],
+                tip: format!("target {} ({} bp)", t.name, t.length),
+            });
+        }
+        if let Some(q) = paf
+            .queries
+            .iter()
+            .find(|s| q_mid >= s.offset && q_mid < s.offset + s.length)
+        {
+            label_ops.push_str(&format!(
+                "1 0 0 1 {:.2} {:.2} Tm ({}) Tj\n",
+                (MARGIN_L - 8.0 - q.name.len() as f64 * font_size * 0.52).max(4.0),
+                img_y + ax_h / 2.0 - 2.5,
+                pdf_escape(&q.name)
+            ));
+            annots.push(Annot {
+                rect: [0.0, img_y, MARGIN_L - 4.0, img_y + ax_h],
+                tip: format!("query {} ({} bp)", q.name, q.length),
+            });
+            if let Some(t) = paf
+                .targets
+                .iter()
+                .find(|s| t_mid >= s.offset && t_mid < s.offset + s.length)
+            {
+                if let Some(stats) = config.pair_stats.get(&(q.name.clone(), t.name.clone())) {
+                    annots.push(Annot {
+                        rect: [img_x, img_y, img_x + ax_w, img_y + ax_h],
+                        tip: format!(
+                            "{} x {}: {} alignments, {} bp, best identity {:.1}%",
+                            q.name,
+                            t.name,
+                            stats.0,
+                            stats.1,
+                            stats.2 * 100.0
+                        ),
+                    });
+                }
+            }
+        }
+    } else {
+        // full matrix: label every row and column
+        for q in paf.queries.iter() {
+            let (py0, py1) = qy(q.offset, q.length);
+            let y_mid = py2pdf((py0 + py1) / 2.0) - 2.5;
+            label_ops.push_str(&format!(
+                "1 0 0 1 {:.2} {:.2} Tm ({}) Tj\n",
+                (MARGIN_L - 8.0 - q.name.len() as f64 * font_size * 0.52).max(4.0),
+                y_mid,
+                pdf_escape(&q.name)
+            ));
+            annots.push(Annot {
+                rect: [0.0, py2pdf(py1), MARGIN_L - 4.0, py2pdf(py0)],
+                tip: format!("query {} ({} bp)", q.name, q.length),
+            });
+        }
+        for t in paf.targets.iter() {
+            let (px0, _) = tx(t.offset, t.length);
+            label_ops.push_str(&format!(
+                "0 1 -1 0 {:.2} {:.2} Tm ({}) Tj\n",
+                px2pdf(px0) + 2.0,
+                img_y + ax_h + 3.0,
+                pdf_escape(&t.name)
+            ));
+            annots.push(Annot {
+                rect: [px2pdf(px0), img_y + ax_h + 3.0, page_w, page_h],
+                tip: format!("target {} ({} bp)", t.name, t.length),
+            });
+        }
+        // cell tooltips for every alignment-populated pair
+        for ((qname, tname), stats) in config.pair_stats.iter() {
+            let (q, t) = match (find_seq(&paf.queries, qname), find_seq(&paf.targets, tname)) {
+                (Some(q), Some(t)) => (q, t),
+                _ => continue,
+            };
+            let (px0, px1) = tx(t.offset, t.length);
+            let (py0, py1) = qy(q.offset, q.length);
+            annots.push(Annot {
+                rect: [px2pdf(px0), py2pdf(py1), px2pdf(px1), py2pdf(py0)],
+                tip: format!(
+                    "{} x {}: {} alignments, {} bp, best identity {:.1}%",
+                    qname,
+                    tname,
+                    stats.0,
+                    stats.1,
+                    stats.2 * 100.0
+                ),
+            });
+        }
+    }
+    label_ops.push_str("ET\n");
+
+    // assemble the page content stream
+    let content = format!(
+        "q\n{:.2} 0 0 {:.2} {:.2} {:.2} cm\n/Im0 Do\nQ\n{}",
+        ax_w, ax_h, img_x, img_y, label_ops
+    );
+
+    // ---- assemble the PDF file
+    let n_annots = annots.len();
+    let font_obj = 6;
+    let first_annot = 7;
+    let total_objs = if n_annots == 0 {
+        font_obj
+    } else {
+        first_annot + n_annots - 1
+    }; // objects 1..=total_objs
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
+    let push_obj = |buf: &mut Vec<u8>, offsets: &mut Vec<usize>, body: Vec<u8>| -> usize {
+        offsets.push(buf.len());
+        let num = offsets.len();
+        buf.extend_from_slice(format!("{} 0 obj\n", num).as_bytes());
+        buf.extend_from_slice(&body);
+        buf.extend_from_slice(b"\nendobj\n");
+        num
+    };
+
+    buf.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+
+    // 1: catalog
+    push_obj(
+        &mut buf,
+        &mut offsets,
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+    );
+    // 2: pages
+    push_obj(
+        &mut buf,
+        &mut offsets,
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+    );
+    // 3: page
+    let mut annot_refs = String::new();
+    for i in first_annot..=total_objs {
+        annot_refs.push_str(&format!("{} 0 R ", i));
+    }
+    let page_obj = format!(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.2} {:.2}] /Resources << /XObject << /Im0 5 0 R >> /Font << /F1 {} 0 R >> >> /Contents 4 0 R /Annots [{}]>>",
+        page_w, page_h, font_obj, annot_refs
+    );
+    push_obj(&mut buf, &mut offsets, page_obj.into_bytes());
+    // 4: content stream
+    let content_obj = format!(
+        "<< /Length {} >>\nstream\n{}\nendstream",
+        content.len(),
+        content
+    );
+    push_obj(&mut buf, &mut offsets, content_obj.into_bytes());
+    // 5: image XObject (FlateDecode, PNG predictor)
+    let image_obj = format!(
+        "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors 3 /Columns {} /BitsPerComponent 8 >> /Length {} >>\nstream\n",
+        config.axes.0, config.axes.1, config.axes.0, img_data.len()
+    );
+    let mut image_body = image_obj.into_bytes();
+    image_body.extend_from_slice(&img_data);
+    image_body.extend_from_slice(b"\nendstream");
+    push_obj(&mut buf, &mut offsets, image_body);
+    // 6: font
+    push_obj(
+        &mut buf,
+        &mut offsets,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+    );
+    // 7..: link annotations carrying hover tooltips
+    for a in annots.iter() {
+        let annot_obj = format!(
+            "<< /Type /Annot /Subtype /Link /Rect [{:.2} {:.2} {:.2} {:.2}] /Border [0 0 0] /F 4 /TU ({}) >>",
+            a.rect[0], a.rect[1], a.rect[2], a.rect[3],
+            pdf_escape(&a.tip)
+        );
+        push_obj(&mut buf, &mut offsets, annot_obj.into_bytes());
+    }
+
+    // xref + trailer
+    let xref_off = buf.len();
+    buf.extend_from_slice(format!("xref\n0 {}\n", total_objs + 1).as_bytes());
+    buf.extend_from_slice(b"0000000000 65535 f \n");
+    for off in offsets.iter() {
+        buf.extend_from_slice(format!("{:010} 00000 n \n", off).as_bytes());
+    }
+    buf.extend_from_slice(
+        format!(
+            "trailer << /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            total_objs + 1,
+            xref_off
+        )
+        .as_bytes(),
+    );
+
+    let path = &Path::new(config.output_filename);
+    if let Err(e) = std::fs::write(path, &buf) {
+        panic!("[pafplot::pdf] failed to write pdf: {:?}", e);
+    }
+    eprintln!(
+        "[pafplot] PDF viewer written to: {} ({:.0}x{:.0} pt, {} row labels, {} column labels, {} tooltips)",
+        config.output_filename,
+        page_w,
+        page_h,
+        paf.queries.len(),
+        paf.targets.len(),
+        n_annots
+    );
 }
 
 #[cfg(test)]

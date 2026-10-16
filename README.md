@@ -20,6 +20,21 @@ cd pafplot
 cargo install --force --path .
 ```
 
+### PDF output with labels and mouseover tooltips
+
+Pass `--pdf` (or name an output ending in `.pdf`) to emit a PDF that embeds the
+dot plot together with row labels (queries, on the left) and column labels
+(targets, on the top). The PDF also carries invisible hover annotations: hover
+a row or column label strip to see the sequence name and length, or hover any
+alignment-populated cell of the matrix to see the pair name, alignment count,
+aligned bp, and best identity. Tooltip display requires a viewer that supports
+link-annotation alternate text (`/TU`), e.g. Adobe Acrobat or Chrome.
+
+```
+pafplot aln.paf --pdf -o aln.pdf     # writes aln.pdf (and aln.png)
+pafplot aln.paf --pdf                 # writes aln.paf.pdf next to aln.paf.png
+```
+
 ## usage
 
 Generate alignments with the cigar string attached to the `cg:Z:` tag.
