@@ -65,7 +65,9 @@ The column named first is the query (row) axis and the second is the target
 (column) axis; if you give them in the reverse order pafplot swaps them.
 Coordinates are in the sequence's own space, as in the PAF. Colors are
 `#RRGGBB`; columns 8+ form the label. Boxes are clipped to the zoomed range
-when `--range` is used.
+when `--range` is used. Boxes are drawn as outlines only (a translucent
+fill would tint the dot plot and obscure the identity coloring);
+pass `--highlight-fill` to restore the filled style.
 
 ## usage
 

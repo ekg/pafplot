@@ -646,6 +646,13 @@ fn main() {
                 .help("BEDPE file(s) for marking 2D ranges as semi-transparent overlays"),
         )
         .arg(
+            Arg::with_name("highlight-fill")
+                .takes_value(false)
+                .long("highlight-fill")
+                .help("Fill highlight boxes with a translucent tint in addition to the outline \
+                       (default draws outline-only boxes so the identity coloring stays visible)."),
+        )
+        .arg(
             Arg::with_name("highlight")
                 .takes_value(true)
                 .multiple(true)
@@ -1010,6 +1017,7 @@ fn main() {
             } else {
                 None
             },
+            highlight_fill: matches.is_present("highlight-fill"),
         });
     }
 
@@ -2770,6 +2778,8 @@ struct PdfViewerConfig<'a> {
     highlights: &'a [HighlightRegion],
     // identity-color legend: (min, max, inverted) when line coloring is on
     legend: Option<(f64, f64, bool)>,
+    // draw highlight boxes with a translucent fill in addition to the outline
+    highlight_fill: bool,
 }
 
 fn pdf_escape(s: &str) -> String {
@@ -3030,10 +3040,25 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
         let (bya, byb) = (py2pdf(y1), py2pdf(y0));
         let (by0, by1) = if bya <= byb { (bya, byb) } else { (byb, bya) };
         let (cr, cg, cb) = hl.color;
-        highlight_ops.push_str(&format!(
-            "/GS0 gs\n{:.3} {:.3} {:.3} rg\n{:.2} {:.2} {:.2} {:.2} re f\n/GS1 gs\n{:.3} {:.3} {:.3} RG\n1 w\n{:.2} {:.2} {:.2} {:.2} re S\n",
-            cr, cg, cb, bx0, by0, bx1 - bx0, by1 - by0, cr, cg, cb, bx0, by0, bx1 - bx0, by1 - by0
-        ));
+        // outline only by default: a filled box tints the dot plot and obscures
+        // the identity coloring; --highlight-fill restores the translucent fill
+        if config.highlight_fill {
+            highlight_ops.push_str(&format!(
+                "/GS0 gs\n{:.3} {:.3} {:.3} rg\n{:.2} {:.2} {:.2} {:.2} re f\n/GS1 gs\n{:.3} {:.3} {:.3} RG\n1 w\n{:.2} {:.2} {:.2} {:.2} re S\n",
+                cr, cg, cb, bx0, by0, bx1 - bx0, by1 - by0, cr, cg, cb, bx0, by0, bx1 - bx0, by1 - by0
+            ));
+        } else {
+            highlight_ops.push_str(&format!(
+                "{:.3} {:.3} {:.3} RG\n1.5 w\n{:.2} {:.2} {:.2} {:.2} re S\n",
+                cr,
+                cg,
+                cb,
+                bx0,
+                by0,
+                bx1 - bx0,
+                by1 - by0
+            ));
+        }
         // label: right of the box when there is room, otherwise left of it
         let label_text = hl.label.clone().unwrap_or_else(|| {
             format!(
