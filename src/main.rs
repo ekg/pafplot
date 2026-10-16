@@ -2533,15 +2533,22 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
     use std::io::Write;
     let paf = config.paf;
     let (ax_w, ax_h) = (config.axes.0 as f64, config.axes.1 as f64);
-    const MARGIN_L: f64 = 200.0; // room for query (row) labels
-    const MARGIN_T: f64 = 200.0; // room for target (column) labels
+    // scale the raster so the page remains a readable size (max ~850 pt)
+    let img_scale = (850.0 / ax_w.max(ax_h)).min(1.0);
+    let img_w = ax_w * img_scale;
+    let img_h = ax_h * img_scale;
+    let font_size = 9.0;
+    // margins sized to the longest labels so nothing clips
+    let longest_q = paf.queries.iter().map(|q| q.name.len()).max().unwrap_or(10) as f64;
+    let longest_t = paf.targets.iter().map(|t| t.name.len()).max().unwrap_or(10) as f64;
+    let margin_l = (longest_q * font_size * 0.52 + 14.0).max(90.0);
+    let margin_t = (longest_t * font_size * 0.52 + 14.0).max(90.0);
     const MARGIN_B: f64 = 24.0;
     const MARGIN_R: f64 = 16.0;
-    let page_w = MARGIN_L + ax_w + MARGIN_R;
-    let page_h = MARGIN_T + ax_h + MARGIN_B;
-    let img_x = MARGIN_L;
+    let page_w = margin_l + img_w + MARGIN_R;
+    let page_h = margin_t + img_h + MARGIN_B;
+    let img_x = margin_l;
     let img_y = MARGIN_B;
-    let font_size = 7.0;
 
     // zlib-compress the raster for the image XObject
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
@@ -2556,8 +2563,8 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
             (0.0, 0.0)
         } else {
             (
-                ax_w * (off as f64 / paf.target_length),
-                ax_w * ((off + len) as f64 / paf.target_length),
+                img_w * (off as f64 / paf.target_length),
+                img_w * ((off + len) as f64 / paf.target_length),
             )
         }
     };
@@ -2566,14 +2573,14 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
             (0.0, 0.0)
         } else {
             (
-                ax_h * (off as f64 / paf.query_length),
-                ax_h * ((off + len) as f64 / paf.query_length),
+                img_h * (off as f64 / paf.query_length),
+                img_h * ((off + len) as f64 / paf.query_length),
             )
         }
     };
-    // pixel coords (x right, y down from image top) -> PDF user space
+    // band coords (x right, y down from image top, already in page space) -> PDF user space
     let px2pdf = |px: f64| img_x + px;
-    let py2pdf = |py: f64| img_y + ax_h - py;
+    let py2pdf = |py: f64| img_y + img_h - py;
 
     // visible text labels + tooltip annotations
     let mut label_ops = String::new();
@@ -2596,11 +2603,11 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
             label_ops.push_str(&format!(
                 "0 1 -1 0 {:.2} {:.2} Tm ({}) Tj\n",
                 img_x + 3.0,
-                img_y + ax_h + 3.0,
+                img_y + img_h + 3.0,
                 pdf_escape(&t.name)
             ));
             annots.push(Annot {
-                rect: [img_x, img_y + ax_h + 3.0, img_x + ax_w, page_h],
+                rect: [img_x, img_y + img_h + 3.0, img_x + img_w, page_h],
                 tip: format!("target {} ({} bp)", t.name, t.length),
             });
         }
@@ -2611,12 +2618,12 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
         {
             label_ops.push_str(&format!(
                 "1 0 0 1 {:.2} {:.2} Tm ({}) Tj\n",
-                (MARGIN_L - 8.0 - q.name.len() as f64 * font_size * 0.52).max(4.0),
-                img_y + ax_h / 2.0 - 2.5,
+                (margin_l - 8.0 - q.name.len() as f64 * font_size * 0.52).max(4.0),
+                img_y + img_h / 2.0 - 2.5,
                 pdf_escape(&q.name)
             ));
             annots.push(Annot {
-                rect: [0.0, img_y, MARGIN_L - 4.0, img_y + ax_h],
+                rect: [0.0, img_y, margin_l - 4.0, img_y + img_h],
                 tip: format!("query {} ({} bp)", q.name, q.length),
             });
             if let Some(t) = paf
@@ -2626,7 +2633,7 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
             {
                 if let Some(stats) = config.pair_stats.get(&(q.name.clone(), t.name.clone())) {
                     annots.push(Annot {
-                        rect: [img_x, img_y, img_x + ax_w, img_y + ax_h],
+                        rect: [img_x, img_y, img_x + img_w, img_y + img_h],
                         tip: format!(
                             "{} x {}: {} alignments, {} bp, best identity {:.1}%",
                             q.name,
@@ -2646,25 +2653,25 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
             let y_mid = py2pdf((py0 + py1) / 2.0) - 2.5;
             label_ops.push_str(&format!(
                 "1 0 0 1 {:.2} {:.2} Tm ({}) Tj\n",
-                (MARGIN_L - 8.0 - q.name.len() as f64 * font_size * 0.52).max(4.0),
+                (margin_l - 8.0 - q.name.len() as f64 * font_size * 0.52).max(4.0),
                 y_mid,
                 pdf_escape(&q.name)
             ));
             annots.push(Annot {
-                rect: [0.0, py2pdf(py1), MARGIN_L - 4.0, py2pdf(py0)],
+                rect: [0.0, py2pdf(py1), margin_l - 4.0, py2pdf(py0)],
                 tip: format!("query {} ({} bp)", q.name, q.length),
             });
         }
         for t in paf.targets.iter() {
-            let (px0, _) = tx(t.offset, t.length);
+            let (px0, px1) = tx(t.offset, t.length);
             label_ops.push_str(&format!(
                 "0 1 -1 0 {:.2} {:.2} Tm ({}) Tj\n",
                 px2pdf(px0) + 2.0,
-                img_y + ax_h + 3.0,
+                img_y + img_h + 3.0,
                 pdf_escape(&t.name)
             ));
             annots.push(Annot {
-                rect: [px2pdf(px0), img_y + ax_h + 3.0, page_w, page_h],
+                rect: [px2pdf(px0), img_y + img_h + 3.0, px2pdf(px1), page_h],
                 tip: format!("target {} ({} bp)", t.name, t.length),
             });
         }
@@ -2694,7 +2701,7 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
     // assemble the page content stream
     let content = format!(
         "q\n{:.2} 0 0 {:.2} {:.2} {:.2} cm\n/Im0 Do\nQ\n{}",
-        ax_w, ax_h, img_x, img_y, label_ops
+        img_w, img_h, img_x, img_y, label_ops
     );
 
     // ---- assemble the PDF file
@@ -2751,8 +2758,8 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
     push_obj(&mut buf, &mut offsets, content_obj.into_bytes());
     // 5: image XObject (FlateDecode, PNG predictor)
     let image_obj = format!(
-        "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors 3 /Columns {} /BitsPerComponent 8 >> /Length {} >>\nstream\n",
-        config.axes.0, config.axes.1, config.axes.0, img_data.len()
+        "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length {} >>\nstream\n",
+        config.axes.0, config.axes.1, img_data.len()
     );
     let mut image_body = image_obj.into_bytes();
     image_body.extend_from_slice(&img_data);
