@@ -88,6 +88,8 @@ struct PafFile {
     target_length: f64,
     // query axis length
     query_length: f64,
+    // optional PAF tag used to color alignment lines (e.g. "bi", "gi", "dv")
+    identity_tag: Option<String>,
 }
 
 fn paf_query(line: &str) -> String {
@@ -124,6 +126,89 @@ fn paf_target_begin(line: &str) -> usize {
 
 fn paf_target_end(line: &str) -> usize {
     line.split('\t').nth(8).unwrap().parse::<usize>().unwrap()
+}
+
+/// BLAST identity from the PAF fixed fields: matches / alignment block length.
+fn paf_blast_identity(line: &str) -> f64 {
+    let matches: f64 = line
+        .split('\t')
+        .nth(9)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0.0);
+    let aln_len: f64 = line
+        .split('\t')
+        .nth(10)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1.0);
+    if aln_len > 0.0 {
+        matches / aln_len
+    } else {
+        0.0
+    }
+}
+
+/// Value of a numeric PAF tag (e.g. bi:f:, gi:f:, dv:f:) as f64, if present.
+fn paf_tag_f64(line: &str, tag: &str) -> Option<f64> {
+    for field in line.split('\t').skip(11) {
+        let mut it = field.splitn(3, ':');
+        if it.next() == Some(tag) {
+            let ty = it.next().unwrap_or("");
+            let val = it.next().unwrap_or("");
+            if ty == "i" || ty == "f" || ty == "d" || ty == "u" {
+                return val.parse::<f64>().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Identity-style score for a PAF line: the given tag when present, else
+/// BLAST identity from the fixed fields.
+fn paf_line_identity(line: &str, tag: &str) -> f64 {
+    paf_tag_f64(line, tag).unwrap_or_else(|| paf_blast_identity(line))
+}
+
+/// Turbo colormap (Google's polynomial approximation), t in 0..1.
+fn turbo(t: f64) -> RGB8 {
+    let t = t.clamp(0.0, 1.0);
+    let poly = |c: [f64; 6]| -> f64 {
+        (c[0]
+            + c[1] * t
+            + c[2] * t.powi(2)
+            + c[3] * t.powi(3)
+            + c[4] * t.powi(4)
+            + c[5] * t.powi(5))
+        .clamp(0.0, 1.0)
+    };
+    let r = poly([
+        0.13572138,
+        4.61539230,
+        -42.66032258,
+        132.13108234,
+        -152.94239396,
+        59.28637943,
+    ]);
+    let g = poly([
+        0.09140261,
+        2.19418839,
+        4.84296658,
+        -14.18503333,
+        4.27729857,
+        2.82956604,
+    ]);
+    let b = poly([
+        0.10667430,
+        12.64194608,
+        -60.58204836,
+        110.36276771,
+        -89.90310912,
+        27.31224958,
+    ]);
+    RGB8 {
+        r: (r * 255.0).round() as u8,
+        g: (g * 255.0).round() as u8,
+        b: (b * 255.0).round() as u8,
+    }
 }
 
 impl PafFile {
@@ -192,6 +277,7 @@ impl PafFile {
             query_mphf,
             target_length: target_offset as f64,
             query_length: query_offset as f64,
+            identity_tag: None,
         }
     }
     fn query_range(self: &PafFile, name: &str, start: usize, end: usize) -> (usize, usize) {
@@ -243,9 +329,13 @@ impl PafFile {
     }
     fn for_each_match<F>(self: &PafFile, line: &str, mut func: F)
     where
-        F: FnMut(char, usize, bool, usize, usize),
+        F: FnMut(char, f64, usize, bool, usize, usize),
     {
         let query_rev = paf_query_is_rev(line);
+        let identity = match self.identity_tag.as_ref() {
+            Some(tag) => paf_line_identity(line, tag.as_str()),
+            None => 1.0,
+        };
         let (x, y) = self.global_start(line, query_rev);
         let mut target_pos = x;
         let mut query_pos = y;
@@ -281,7 +371,7 @@ impl PafFile {
                 match c {
                     'M' | '=' | 'X' => {
                         let n = cigar[first..i].parse::<usize>().unwrap();
-                        func(c, target_pos, query_rev, query_pos, n);
+                        func(c, identity, target_pos, query_rev, query_pos, n);
                         query_pos = if query_rev {
                             query_pos.saturating_sub(n)
                         } else {
@@ -311,7 +401,7 @@ impl PafFile {
     }
     fn for_each_match_in_file<F>(self: &PafFile, mut func: F)
     where
-        F: FnMut(char, usize, bool, usize, usize),
+        F: FnMut(char, f64, usize, bool, usize, usize),
     {
         for_each_line_in_file(&self.filename, |line: &str| {
             /*
@@ -509,6 +599,32 @@ fn main() {
                 .help("Generate an interactive HTML viewer (default output format)."),
         )
         .arg(
+            Arg::with_name("color-by")
+                .takes_value(true)
+                .long("color-by")
+                .help("Color alignment lines by this numeric PAF tag (e.g. bi, gi, dv, de). \
+                       Lines missing the tag fall back to BLAST identity (matches/alen)."),
+        )
+        .arg(
+            Arg::with_name("color-by-identity")
+                .takes_value(false)
+                .long("color-by-identity")
+                .help("Color alignment lines by identity (equivalent to --color-by bi). \
+                       Uses the bi: tag when present, else matches/alen from the fixed fields."),
+        )
+        .arg(
+            Arg::with_name("color-scale")
+                .takes_value(true)
+                .long("color-scale")
+                .help("Identity range mapping onto the line colormap, min:max in [0,1]. [default: 0.8:1.0]"),
+        )
+        .arg(
+            Arg::with_name("invert-color-scale")
+                .takes_value(false)
+                .long("invert-color-scale")
+                .help("Flip the color scale (for divergence-style tags such as dv or de)."),
+        )
+        .arg(
             Arg::with_name("output")
                 .takes_value(true)
                 .short("o")
@@ -540,7 +656,31 @@ fn main() {
         .get_matches();
 
     let filename = matches.value_of("INPUT").unwrap();
-    let paf = PafFile::new(filename);
+    let mut paf = PafFile::new(filename);
+
+    // line coloring by identity (or any numeric tag)
+    let color_tag: Option<String> = if matches.is_present("color-by") {
+        Some(matches.value_of("color-by").unwrap().to_string())
+    } else if matches.is_present("color-by-identity") {
+        Some("bi".to_string())
+    } else {
+        None
+    };
+    paf.identity_tag = color_tag.clone();
+    let (id_min, id_max) = match matches.value_of("color-scale") {
+        Some(spec) => {
+            let parts: Vec<&str> = spec.split(':').collect();
+            if parts.len() != 2 {
+                panic!("[pafplot] invalid --color-scale {}, expected min:max", spec);
+            }
+            (
+                parts[0].parse::<f64>().unwrap(),
+                parts[1].parse::<f64>().unwrap(),
+            )
+        }
+        None => (0.8, 1.0),
+    };
+    let invert_scale = matches.is_present("invert-color-scale");
 
     let major_axis = matches
         .value_of("size")
@@ -756,8 +896,34 @@ fn main() {
     });
 
     // for each match, we draw a line on our raster using Xiaolin Wu's antialiased line algorithm
-    let draw_match = |_c, x: usize, rev: bool, y: usize, len: usize| {
+    // lines are colored by identity (turbo colormap) when --color-by/--color-by-identity is set
+    let fg_line = if dark { white } else { black };
+    let blend = |bg: RGB8, lc: RGB8, a: f64| -> RGB8 {
+        RGB8 {
+            r: (bg.r as f64 + (lc.r as f64 - bg.r as f64) * a).round() as u8,
+            g: (bg.g as f64 + (lc.g as f64 - bg.g as f64) * a).round() as u8,
+            b: (bg.b as f64 + (lc.b as f64 - bg.b as f64) * a).round() as u8,
+        }
+    };
+    let line_color_for = |identity: f64| -> RGB8 {
+        match color_tag {
+            Some(_) => {
+                let mut t = if id_max > id_min {
+                    (identity - id_min) / (id_max - id_min)
+                } else {
+                    0.0
+                };
+                if invert_scale {
+                    t = 1.0 - t;
+                }
+                turbo(t)
+            }
+            None => fg_line,
+        }
+    };
+    let draw_match = |_c, identity: f64, x: usize, rev: bool, y: usize, len: usize| {
         //println!("draw_match {} {} {} {} {}", _c, x, rev, y, len);
+        let lc = line_color_for(identity);
         let start = get_coords(x, y);
         let end = get_coords(x + len, if rev { y.saturating_sub(len) } else { y + len });
 
@@ -772,7 +938,11 @@ fn main() {
             if i >= 0 && i < (axes.0 as i64) && j >= 0 && j < (axes.1 as i64) {
                 //println!("drawing pixel {} {} {}", i, j, val);
                 let i: usize = (i as usize) + (((axes.1 - 1) - j as usize) * axes.0);
-                pixels[i] = get_color(val);
+                pixels[i] = if color_tag.is_some() {
+                    blend(if dark { black } else { white }, lc, val)
+                } else {
+                    get_color(val)
+                };
             }
         }
     };
@@ -835,6 +1005,11 @@ fn main() {
             ranges: (target_range, query_range),
             pair_stats: &pair_stats,
             highlights: &highlight_regions,
+            legend: if color_tag.is_some() {
+                Some((id_min, id_max, invert_scale))
+            } else {
+                None
+            },
         });
     }
 
@@ -892,7 +1067,7 @@ fn collect_alignment_data(paf: &PafFile) -> (String, String, String) {
         // Collect detailed CIGAR operations for base-level view
         let mut cigar_ops = Vec::new();
 
-        paf.for_each_match(line, |c, target_pos, rev, query_pos, len| {
+        paf.for_each_match(line, |c, _identity, target_pos, rev, query_pos, len| {
             let op_type = match c {
                 'M' | '=' => "match",
                 'X' => "mismatch",
@@ -2593,6 +2768,8 @@ struct PdfViewerConfig<'a> {
     ranges: ((usize, usize), (usize, usize)),
     pair_stats: &'a PairStats,
     highlights: &'a [HighlightRegion],
+    // identity-color legend: (min, max, inverted) when line coloring is on
+    legend: Option<(f64, f64, bool)>,
 }
 
 fn pdf_escape(s: &str) -> String {
@@ -2626,12 +2803,12 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
     let longest_t = paf.targets.iter().map(|t| t.name.len()).max().unwrap_or(10) as f64;
     let margin_l = (longest_q * font_size * 0.52 + 14.0).max(90.0);
     let margin_t = (longest_t * font_size * 0.52 + 14.0).max(90.0);
-    const MARGIN_B: f64 = 24.0;
+    let margin_b = if config.legend.is_some() { 40.0 } else { 24.0 };
     const MARGIN_R: f64 = 16.0;
     let page_w = margin_l + img_w + MARGIN_R;
-    let page_h = margin_t + img_h + MARGIN_B;
+    let page_h = margin_t + img_h + margin_b;
     let img_x = margin_l;
-    let img_y = MARGIN_B;
+    let img_y = margin_b;
 
     // zlib-compress the raster for the image XObject
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
@@ -2875,10 +3052,55 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
         });
     }
 
+    // identity-color legend strip
+    let mut legend_ops = String::new();
+    if let Some((lmin, lmax, linv)) = config.legend {
+        let strip_w = 200.0;
+        let segs = 100;
+        legend_ops.push_str(&format!(
+            "BT\n/F1 6.5 Tf\n0 0 0 rg\n1 0 0 1 {:.2} {:.2} Tm (alignment identity) Tj\nET\n",
+            img_x,
+            margin_b - 6.0
+        ));
+        for s in 0..segs {
+            let u = s as f64 / (segs - 1) as f64;
+            let t = if linv { 1.0 - u } else { u };
+            let c = turbo(t);
+            legend_ops.push_str(&format!(
+                "{:.3} {:.3} {:.3} rg\n{:.2} {:.2} {:.3} {:.2} re f\n",
+                c.r as f64 / 255.0,
+                c.g as f64 / 255.0,
+                c.b as f64 / 255.0,
+                img_x + u * strip_w,
+                margin_b - 18.0,
+                strip_w / segs as f64 + 0.2,
+                8.0
+            ));
+        }
+        legend_ops.push_str(&format!(
+            "BT\n/F1 6.5 Tf\n0 0 0 rg\n1 0 0 1 {:.2} {:.2} Tm ({:.0}%) Tj\nET\n",
+            img_x,
+            margin_b - 30.0,
+            lmin * 100.0
+        ));
+        legend_ops.push_str(&format!(
+            "BT\n/F1 6.5 Tf\n0 0 0 rg\n1 0 0 1 {:.2} {:.2} Tm ({:.0}%) Tj\nET\n",
+            img_x + strip_w / 2.0 - 12.0,
+            margin_b - 30.0,
+            (lmin + lmax) / 2.0 * 100.0
+        ));
+        legend_ops.push_str(&format!(
+            "BT\n/F1 6.5 Tf\n0 0 0 rg\n1 0 0 1 {:.2} {:.2} Tm ({:.0}%) Tj\nET\n",
+            img_x + strip_w - 20.0,
+            margin_b - 30.0,
+            lmax * 100.0
+        ));
+    }
+
     // assemble the page content stream
     let content = format!(
-        "q\n{:.2} 0 0 {:.2} {:.2} {:.2} cm\n/Im0 Do\nQ\n{}{}",
-        img_w, img_h, img_x, img_y, label_ops, highlight_ops
+        "q\n{:.2} 0 0 {:.2} {:.2} {:.2} cm\n/Im0 Do\nQ\n{}{}{}",
+        img_w, img_h, img_x, img_y, label_ops, highlight_ops, legend_ops
     );
 
     // ---- assemble the PDF file

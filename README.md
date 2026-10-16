@@ -35,6 +35,22 @@ pafplot aln.paf --pdf -o aln.pdf     # writes aln.pdf (and aln.png)
 pafplot aln.paf --pdf                 # writes aln.paf.pdf next to aln.paf.png
 ```
 
+#### coloring alignment lines by identity (or any PAF tag)
+
+`--color-by-identity` colors every alignment line by its identity on a turbo
+scale (default 0.8-1.0, adjustable with `--color-scale min:max`), so the
+similarity metric is visible directly in the dot plot. By default the `bi:f:`
+(BLAST identity) tag is used, falling back to `matches/alignment length`
+from the PAF fixed fields when the tag is absent. `--color-by <TAG>` reads
+any numeric tag instead (e.g. `gi:f:`, `dv:f:`); pair it with
+`--invert-color-scale` for divergence-style tags. The PDF gains a color-scale
+legend strip.
+
+```
+pafplot aln.paf --pdf --color-by-identity --color-scale 0.95:1.0
+pafplot aln.paf --pdf --color-by dv --invert-color-scale   # minimap2 divergence tag
+```
+
 #### highlighting 2D regions (exchange candidates)
 
 `--highlight` takes one or more TSV files of 2D regions drawn on the PDF as
