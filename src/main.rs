@@ -653,6 +653,12 @@ fn main() {
                        (default draws outline-only boxes so the identity coloring stays visible)."),
         )
         .arg(
+            Arg::with_name("pdf-label-size")
+                .takes_value(true)
+                .long("pdf-label-size")
+                .help("PDF label font size in points [default: 9]. Increase when the figure will be placed smaller than its page width."),
+        )
+        .arg(
             Arg::with_name("highlight")
                 .takes_value(true)
                 .multiple(true)
@@ -1018,6 +1024,11 @@ fn main() {
                 None
             },
             highlight_fill: matches.is_present("highlight-fill"),
+            label_size: matches
+                .value_of("pdf-label-size")
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| *v > 0.0)
+                .unwrap_or(9.0),
         });
     }
 
@@ -2778,6 +2789,9 @@ struct PdfViewerConfig<'a> {
     highlights: &'a [HighlightRegion],
     // identity-color legend: (min, max, inverted) when line coloring is on
     legend: Option<(f64, f64, bool)>,
+    // PDF label font size in points (labels shrink with the page at placement, so a
+    // figure placed much smaller than its page needs a larger label size)
+    label_size: f64,
     // draw highlight boxes with a translucent fill in addition to the outline
     highlight_fill: bool,
 }
@@ -2818,7 +2832,7 @@ fn generate_pdf_viewer(config: PdfViewerConfig) {
     let img_scale = (850.0 / ax_w.max(ax_h)).min(1.0);
     let img_w = ax_w * img_scale;
     let img_h = ax_h * img_scale;
-    let font_size = 9.0;
+    let font_size = config.label_size;
     // margins sized to the longest labels so nothing clips
     let row_labels: Vec<String> = paf
         .queries
